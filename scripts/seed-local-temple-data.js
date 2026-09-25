@@ -513,19 +513,19 @@ async function main() {
     `, { id: TENANT_ID }, transaction);
 
     const users = [
-      [1, 'Test Learner', 'learner@example.com', '+1-555-0100'],
-      [2, 'Admin User', 'admin@example.com', '+1-555-0199'],
-      [3, 'Sri Krishna Jarugubilli', SIGNED_IN_EMAIL, '+1-555-0102'],
-      [4, 'Gita Sharma', 'gita.sharma@example.com', '+1-555-0103'],
-      [5, 'Madhav Das', 'madhav.das@example.com', '+1-555-0104']
+      ['Test Learner', 'learner@example.com', '+1-555-0100'],
+      ['Admin User', 'admin@example.com', '+1-555-0199'],
+      ['Sri Krishna Jarugubilli', SIGNED_IN_EMAIL, '+1-555-0102'],
+      ['Gita Sharma', 'gita.sharma@example.com', '+1-555-0103'],
+      ['Madhav Das', 'madhav.das@example.com', '+1-555-0104']
     ];
 
-    for (const [id, name, email, phone] of users) {
+    for (const [name, email, phone] of users) {
       await upsert(`
-        INSERT INTO users (id, name, email, phone, "createdAt", "updatedAt")
-        VALUES (:id, :name, :email, :phone, NOW(), NOW())
+        INSERT INTO users (name, email, phone, "createdAt", "updatedAt")
+        VALUES (:name, :email, :phone, NOW(), NOW())
         ON CONFLICT (email, phone) DO UPDATE SET name = EXCLUDED.name, "updatedAt" = NOW(), "deletedAt" = NULL
-      `, { id, name, email, phone }, transaction);
+      `, { name, email, phone }, transaction);
     }
 
     const roleNames = ['CHEF', 'PRIEST', 'TEMPLE_ADMIN', 'VOLUNTEER', 'BOOK_TABLE', 'FESTIVAL_VOLUNTEER'];
@@ -714,10 +714,15 @@ async function main() {
       `, { userId: user.id }, transaction);
     }
 
+    const [[adminUser]] = await sequelize.query(
+      "SELECT id FROM users WHERE email = 'admin@example.com' LIMIT 1",
+      { transaction }
+    );
+
     for (const [index, announcement] of announcements.entries()) {
       await upsert(`
         INSERT INTO announcements (id, title, "bodyHtml", "bodyPreview", "imageUrl", "authorUserId", "expiryAt", "tenantId", "createdAt", "updatedAt")
-        VALUES (:id, :title, :body, :preview, :image, 2, NULL, :tenantId, NOW() - (:ageDays || ' days')::interval, NOW())
+        VALUES (:id, :title, :body, :preview, :image, :authorUserId, NULL, :tenantId, NOW() - (:ageDays || ' days')::interval, NOW())
         ON CONFLICT (id) DO UPDATE SET
           title = EXCLUDED.title,
           "bodyHtml" = EXCLUDED."bodyHtml",
@@ -730,6 +735,7 @@ async function main() {
         ...announcement,
         body: `<p>${announcement.preview}</p>`,
         tenantId: TENANT_ID,
+        authorUserId: adminUser.id,
         ageDays: String(index)
       }, transaction);
 
