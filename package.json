@@ -1,0 +1,49 @@
+{
+  "name": "clug-service",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev": "NODE_ENV=development nodemon --exec 'node src/server.js'",
+    "start": "NODE_ENV=production node src/server.js",
+    "start:single": "NODE_ENV=production WEB_CONCURRENCY=1 node src/server.js",
+    "migrate": "sequelize-cli db:migrate",
+    "migrate:undo": "sequelize-cli db:migrate:undo",
+    "seed": "sequelize-cli db:seed:all",
+    "seed:local": "node scripts/seed-local-temple-data.js",
+    "seed:library": "node scripts/seed-library-examples.js",
+    "seed:undo": "sequelize-cli db:seed:undo:all",
+    "seed:curriculum": "sequelize-cli db:seed --seed 20250925180000-complete-curriculum-setup.js",
+    "sync:gumlet": "node scripts/sync-gumlet-asset-ids.js",
+    "test": "NODE_ENV=test jest",
+    "lint": "eslint src/",
+    "lint:fix": "eslint src/ --fix",
+    "kill:port": "sudo kill -9 $(sudo lsof -t -i:8006)"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@adminjs/express": "^5.0.1",
+    "@adminjs/sequelize": "^3.0.0",
+    "@aws-sdk/client-s3": "^3.1068.0",
+    "adminjs": "^6.8.7",
+    "axios": "^1.13.2",
+    "compression": "^1.8.1",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.2",
+    "express": "^5.1.0",
+    "express-rate-limit": "^8.1.0",
+    "helmet": "^8.1.0",
+    "m3u8-parser": "^7.2.0",
+    "multer": "^2.1.1",
+    "pg": "^8.16.3",
+    "pg-hstore": "^2.3.4",
+    "sanitize-html": "^2.17.4",
+    "sequelize": "^6.37.7"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.10",
+    "sequelize-cli": "^6.6.3"
+  }
+}

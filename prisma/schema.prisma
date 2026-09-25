@@ -1,0 +1,278 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Tenant {
+  id        String   @id @default(uuid()) @db.Uuid
+  domain    String   @unique @db.VarChar(255)
+  name      String   @db.VarChar(255)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  courses       Course[]
+  announcements Announcement[]
+
+  @@map("tenants")
+}
+
+model User {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String   @db.VarChar(255)
+  email     String   @unique @db.VarChar(255)
+  phone     String?  @db.VarChar(50)
+  imageUrl  String?  @map("image_url") @db.VarChar(2048)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  roles             UserRole[]
+  enrollments       Enrollment[]
+  announcementReads AnnouncementRead[]
+
+  @@map("users")
+}
+
+model Role {
+  id   String @id @default(uuid()) @db.Uuid
+  name String @unique @db.VarChar(100)
+
+  users   UserRole[]
+  courses CourseRole[]
+
+  @@map("roles")
+}
+
+model UserRole {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @map("user_id") @db.Uuid
+  roleId String @map("role_id") @db.Uuid
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, roleId])
+  @@map("user_roles")
+}
+
+model Course {
+  id          String   @id @default(uuid()) @db.Uuid
+  tenantId    String   @map("tenant_id") @db.Uuid
+  title       String   @db.VarChar(255)
+  description String?  @db.Text
+  coverImage  String?  @map("cover_image") @db.VarChar(2048)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  tenant              Tenant               @relation(fields: [tenantId], references: [id])
+  roles               CourseRole[]
+  modules             Module[]
+  enrollments         Enrollment[]
+  announcementCourses AnnouncementCourse[]
+
+  @@index([tenantId])
+  @@map("courses")
+}
+
+model CourseRole {
+  id       String @id @default(uuid()) @db.Uuid
+  courseId String @map("course_id") @db.Uuid
+  roleId   String @map("role_id") @db.Uuid
+
+  course Course @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  role   Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([courseId, roleId])
+  @@map("course_roles")
+}
+
+model Module {
+  id             String    @id @default(uuid()) @db.Uuid
+  courseId       String    @map("course_id") @db.Uuid
+  title          String    @db.VarChar(255)
+  description    String?   @db.Text
+  sequenceNumber Int       @default(0) @map("sequence_number")
+  startsAt       DateTime? @map("starts_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  course   Course    @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  contents Content[]
+
+  @@index([courseId])
+  @@map("modules")
+}
+
+enum ContentType {
+  VIDEO
+  DOCUMENT
+  RICH_TEXT
+  AUDIO
+  IMAGE
+}
+
+model Content {
+  id             String      @id @default(uuid()) @db.Uuid
+  moduleId       String      @map("module_id") @db.Uuid
+  type           ContentType
+  title          String      @db.VarChar(255)
+  description    String?     @db.Text
+  sequenceNumber Int         @default(0) @map("sequence_number")
+  createdAt      DateTime    @default(now()) @map("created_at")
+  updatedAt      DateTime    @updatedAt @map("updated_at")
+
+  module   Module            @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  video    Video?
+  audio    Audio?
+  document Document?
+  richText RichText?
+  image    Image?
+  progress ContentProgress[]
+
+  @@index([moduleId])
+  @@map("contents")
+}
+
+model Video {
+  id              String  @id @default(uuid()) @db.Uuid
+  contentId       String  @unique @map("content_id") @db.Uuid
+  externalVideoId String  @map("external_video_id") @db.VarChar(255)
+  duration        Int?
+  thumbnailUrl    String? @map("thumbnail_url") @db.VarChar(2048)
+  transcript      String? @db.Text
+
+  content Content @relation(fields: [contentId], references: [id], onDelete: Cascade)
+
+  @@map("videos")
+}
+
+model Audio {
+  id        String @id @default(uuid()) @db.Uuid
+  contentId String @unique @map("content_id") @db.Uuid
+  url       String @db.VarChar(2048)
+  duration  Int?
+
+  content Content @relation(fields: [contentId], references: [id], onDelete: Cascade)
+
+  @@map("audios")
+}
+
+model Document {
+  id        String @id @default(uuid()) @db.Uuid
+  contentId String @unique @map("content_id") @db.Uuid
+  fileUrl   String @map("file_url") @db.VarChar(2048)
+  fileType  String @map("file_type") @db.VarChar(100)
+  fileSize  Int?   @map("file_size")
+
+  content Content @relation(fields: [contentId], references: [id], onDelete: Cascade)
+
+  @@map("documents")
+}
+
+model RichText {
+  id        String @id @default(uuid()) @db.Uuid
+  contentId String @unique @map("content_id") @db.Uuid
+  body      String @db.Text
+
+  content Content @relation(fields: [contentId], references: [id], onDelete: Cascade)
+
+  @@map("rich_texts")
+}
+
+model Image {
+  id        String  @id @default(uuid()) @db.Uuid
+  contentId String  @unique @map("content_id") @db.Uuid
+  url       String  @db.VarChar(2048)
+  altText   String? @map("alt_text") @db.VarChar(255)
+
+  content Content @relation(fields: [contentId], references: [id], onDelete: Cascade)
+
+  @@map("images")
+}
+
+model Enrollment {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  courseId  String   @map("course_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user     User              @relation(fields: [userId], references: [id])
+  course   Course            @relation(fields: [courseId], references: [id])
+  progress ContentProgress[]
+
+  @@unique([userId, courseId])
+  @@index([courseId])
+  @@map("enrollments")
+}
+
+enum ProgressStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  COMPLETED
+}
+
+model ContentProgress {
+  id              String         @id @default(uuid()) @db.Uuid
+  enrollmentId    String         @map("enrollment_id") @db.Uuid
+  contentId       String         @map("content_id") @db.Uuid
+  status          ProgressStatus @default(NOT_STARTED)
+  watchedDuration Int?           @map("watched_duration")
+  completedAt     DateTime?      @map("completed_at")
+  createdAt       DateTime       @default(now()) @map("created_at")
+  updatedAt       DateTime       @updatedAt @map("updated_at")
+
+  enrollment Enrollment @relation(fields: [enrollmentId], references: [id], onDelete: Cascade)
+  content    Content    @relation(fields: [contentId], references: [id], onDelete: Cascade)
+
+  @@unique([enrollmentId, contentId])
+  @@map("content_progress")
+}
+
+model Announcement {
+  id        String    @id @default(uuid()) @db.Uuid
+  tenantId  String    @map("tenant_id") @db.Uuid
+  authorId  String?   @map("author_id") @db.Uuid
+  title     String    @db.VarChar(255)
+  bodyHtml  String    @map("body_html") @db.Text
+  imageUrl  String?   @map("image_url") @db.VarChar(2048)
+  expiresAt DateTime? @map("expires_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  tenant  Tenant               @relation(fields: [tenantId], references: [id])
+  courses AnnouncementCourse[]
+
+  @@index([tenantId])
+  @@map("announcements")
+}
+
+model AnnouncementCourse {
+  id             String  @id @default(uuid()) @db.Uuid
+  announcementId String  @map("announcement_id") @db.Uuid
+  courseId       String  @map("course_id") @db.Uuid
+  isPinned       Boolean @default(false) @map("is_pinned")
+
+  announcement Announcement       @relation(fields: [announcementId], references: [id], onDelete: Cascade)
+  course       Course             @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  reads        AnnouncementRead[]
+
+  @@unique([announcementId, courseId])
+  @@map("announcement_courses")
+}
+
+model AnnouncementRead {
+  id                   String   @id @default(uuid()) @db.Uuid
+  announcementCourseId String   @map("announcement_course_id") @db.Uuid
+  userId               String   @map("user_id") @db.Uuid
+  readAt               DateTime @default(now()) @map("read_at")
+
+  announcementCourse AnnouncementCourse @relation(fields: [announcementCourseId], references: [id], onDelete: Cascade)
+  user               User               @relation(fields: [userId], references: [id])
+
+  @@unique([announcementCourseId, userId])
+  @@map("announcement_reads")
+}
