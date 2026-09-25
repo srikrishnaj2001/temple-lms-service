@@ -9,28 +9,71 @@ sequelize.options.logging = false;
 const TENANT_ID = '8daf17bc-7c43-44b7-ba3b-67d8a439e072';
 const SIGNED_IN_EMAIL = 'srikrishna.jarugubilli2001@gmail.com';
 
-function commonsImage(fileName, width = 1200) {
-  return `https://commons.wikimedia.org/wiki/Special:FilePath/${encodeURIComponent(fileName)}?width=${width}`;
-}
+// 40 distinct, real ISKCON/Hare-Krishna photos (Wikimedia Commons originals, freely
+// licensed), re-hosted on R2 as 1200x675 (16:9) crops. Assigned round-robin per course
+// below so courses don't all share the same handful of thumbnails.
+const THUMBNAIL_POOL = [
+  'https://pub-365e6c5c33944480b373cd70d00e3591.r2.dev/seed-assets/thumbnails/course-thumb-315d960fab.jpg',
+  'https://pub-365e6c5c33944480b373cd70d00e3591.r2.dev/seed-assets/thumbnails/course-thumb-a0fbce4be7.jpg',
+  'https://pub-365e6c5c33944480b373cd70d00e3591.r2.dev/seed-assets/thumbnails/course-thumb-81d693657f.jpg',
+  'https://pub-365e6c5c33944480b373cd70d00e3591.r2.dev/seed-assets/thumbnails/course-thumb-ba35ff1031.jpg',
+  'https://pub-365e6c5c33944480b373cd70d00e3591.r2.dev/seed-assets/thumbnails/course-thumb-3684b6ad7a.jpg',
+  'https://pub-365e6c5c33944480b373cd70d00e3591.r2.dev/seed-assets/thumbnails/course-thumb-5d66aa7155.jpg',
+  'https://pub-365e6c5c33944480b373cd70d00e3591.r2.dev/seed-assets/thumbnails/course-thumb-55ea7149a2.jpg',
+  'https://pub-365e6c5c33944480b373cd70d00e3591.r2.dev/seed-assets/thumbnails/course-thumb-8d6acf18f5.jpg',
+  'https://pub-365e6c5c33944480b373cd70d00e3591.r2.dev/seed-assets/thumbnails/course-thumb-5878598198.jpg',
+  'https://pub-365e6c5c33944480b373cd70d00e3591.r2.dev/seed-assets/thumbnails/course-thumb-2aab3afe25.jpg',
+  'https://pub-365e6c5c33944480b373cd70d00e3591.r2.dev/seed-assets/thumbnails/course-thumb-f785b1d9db.jpg',
+  'https://pub-365e6c5c33944480b373cd70d00e3591.r2.dev/seed-assets/thumbnails/course-thumb-79b7c4b611.jpg',
+  'https://pub-365e6c5c33944480b373cd70d00e3591.r2.dev/seed-assets/thumbnails/course-thumb-b9b6f153e3.jpg',
+  'https://pub-365e6c5c33944480b373cd70d00e3591.r2.dev/seed-assets/thumbnails/course-thumb-c468321f05.jpg',
+  'https://pub-365e6c5c33944480b373cd70d00e3591.r2.dev/seed-assets/thumbnails/course-thumb-65708eaf0a.jpg',
+  'https://pub-365e6c5c33944480b373cd70d00e3591.r2.dev/seed-assets/thumbnails/course-thumb-1dd326cfc5.jpg',
+  'https://pub-365e6c5c33944480b373cd70d00e3591.r2.dev/seed-assets/thumbnails/course-thumb-62a37fd93e.jpg',
+  'https://pub-365e6c5c33944480b373cd70d00e3591.r2.dev/seed-assets/thumbnails/course-thumb-a8458666d3.jpg',
+  'https://pub-365e6c5c33944480b373cd70d00e3591.r2.dev/seed-assets/thumbnails/course-thumb-c0c6e25403.jpg',
+  'https://pub-365e6c5c33944480b373cd70d00e3591.r2.dev/seed-assets/thumbnails/course-thumb-e3ef7159b5.jpg',
+  'https://pub-365e6c5c33944480b373cd70d00e3591.r2.dev/seed-assets/thumbnails/course-thumb-4673064efc.jpg',
+  'https://pub-365e6c5c33944480b373cd70d00e3591.r2.dev/seed-assets/thumbnails/course-thumb-fe132a44c5.jpg',
+  'https://pub-365e6c5c33944480b373cd70d00e3591.r2.dev/seed-assets/thumbnails/course-thumb-458de38fc2.jpg',
+  'https://pub-365e6c5c33944480b373cd70d00e3591.r2.dev/seed-assets/thumbnails/course-thumb-8ee11f5b6e.jpg',
+  'https://pub-365e6c5c33944480b373cd70d00e3591.r2.dev/seed-assets/thumbnails/course-thumb-a8509172a7.jpg',
+  'https://pub-365e6c5c33944480b373cd70d00e3591.r2.dev/seed-assets/thumbnails/course-thumb-791c6d1be6.jpg',
+  'https://pub-365e6c5c33944480b373cd70d00e3591.r2.dev/seed-assets/thumbnails/course-thumb-30fc8a2fd5.jpg',
+  'https://pub-365e6c5c33944480b373cd70d00e3591.r2.dev/seed-assets/thumbnails/course-thumb-c358cf9b0f.jpg',
+  'https://pub-365e6c5c33944480b373cd70d00e3591.r2.dev/seed-assets/thumbnails/course-thumb-437a4c0821.jpg',
+  'https://pub-365e6c5c33944480b373cd70d00e3591.r2.dev/seed-assets/thumbnails/course-thumb-24054b1043.jpg',
+  'https://pub-365e6c5c33944480b373cd70d00e3591.r2.dev/seed-assets/thumbnails/course-thumb-d607c4cb57.jpg',
+  'https://pub-365e6c5c33944480b373cd70d00e3591.r2.dev/seed-assets/thumbnails/course-thumb-945aa86088.jpg',
+  'https://pub-365e6c5c33944480b373cd70d00e3591.r2.dev/seed-assets/thumbnails/course-thumb-1fbb852fe5.jpg',
+  'https://pub-365e6c5c33944480b373cd70d00e3591.r2.dev/seed-assets/thumbnails/course-thumb-8f3dcda176.jpg',
+  'https://pub-365e6c5c33944480b373cd70d00e3591.r2.dev/seed-assets/thumbnails/course-thumb-5b5e36a929.jpg',
+  'https://pub-365e6c5c33944480b373cd70d00e3591.r2.dev/seed-assets/thumbnails/course-thumb-1ac8fd588e.jpg',
+  'https://pub-365e6c5c33944480b373cd70d00e3591.r2.dev/seed-assets/thumbnails/course-thumb-a3da875e3a.jpg',
+  'https://pub-365e6c5c33944480b373cd70d00e3591.r2.dev/seed-assets/thumbnails/course-thumb-ef34d914ac.jpg',
+  'https://pub-365e6c5c33944480b373cd70d00e3591.r2.dev/seed-assets/thumbnails/course-thumb-d9039ec3de.jpg',
+  'https://pub-365e6c5c33944480b373cd70d00e3591.r2.dev/seed-assets/thumbnails/course-thumb-bcba1a528b.jpg'
+];
 
-const courseThumbnails = {
-  etiquette: commonsImage('Sri Krishna Temple, ISKCON, Mayapur.jpg'),
-  kitchen: commonsImage('Brahmachari Prasadam Hall - ISKCON Campus - Mayapur - Nadia 2017-08-15 2054.JPG'),
-  puja: commonsImage('Sri Radha Rasabihariji -ISKCON Juhu.jpg'),
-  books: commonsImage('Book Stall - ISKCON Campus - Mayapur - Nadia 2017-08-15 2059.JPG'),
-  festival: commonsImage('ISKCON Ratha Yatra 2024, Dhaka.jpg'),
-  mayapur: commonsImage('Sri Krishna Temple, ISKCON, Mayapur.jpg'),
-  deity: commonsImage('Radha Krishna, ISKCON Bangalore.jpg'),
-  kirtan: commonsImage('Sri Radha Rasabihariji -ISKCON Juhu.jpg'),
-  garden: commonsImage('Brahmachari Prasadam Hall - ISKCON Campus - Mayapur - Nadia 2017-08-15 2054.JPG')
-};
+// Real, public-domain ISKCON/Vaishnava-related PDFs (Wikimedia Commons / Internet
+// Archive originals), re-hosted on R2. Used for every RESOURCE row whose resourceType
+// is PDF, since the old `templeinfo.org/resources/:id` links never resolved to a file.
+const PDF_RESOURCE_POOL = [
+  'https://pub-365e6c5c33944480b373cd70d00e3591.r2.dev/seed-assets/pdfs/resource-54430e5fa0.pdf',
+  'https://pub-365e6c5c33944480b373cd70d00e3591.r2.dev/seed-assets/pdfs/resource-30a28afde2.pdf',
+  'https://pub-365e6c5c33944480b373cd70d00e3591.r2.dev/seed-assets/pdfs/resource-f558880016.pdf',
+  'https://pub-365e6c5c33944480b373cd70d00e3591.r2.dev/seed-assets/pdfs/resource-1df2e6a5a7.pdf',
+  'https://pub-365e6c5c33944480b373cd70d00e3591.r2.dev/seed-assets/pdfs/resource-08cf63a32b.pdf',
+  'https://pub-365e6c5c33944480b373cd70d00e3591.r2.dev/seed-assets/pdfs/resource-cce5462e34.pdf',
+  'https://pub-365e6c5c33944480b373cd70d00e3591.r2.dev/seed-assets/pdfs/resource-e36c39a15b.pdf',
+  'https://pub-365e6c5c33944480b373cd70d00e3591.r2.dev/seed-assets/pdfs/resource-b7b543a824.pdf'
+];
 
 const baseCourses = [
   {
     id: 1,
     title: 'Temple Etiquette Foundations',
     description: 'A calm onboarding path for new volunteers covering darshan etiquette, sacred-space awareness, guest care, and daily temple rhythm.',
-    thumbnailUrl: courseThumbnails.etiquette,
     modules: [
       {
         title: 'Entering Sacred Service',
@@ -57,7 +100,6 @@ const baseCourses = [
     id: 2,
     title: 'Prasadam Kitchen Service',
     description: 'Chef and kitchen-volunteer training for cleanliness, ingredient handling, offering readiness, serving flow, and prasadam distribution.',
-    thumbnailUrl: courseThumbnails.kitchen,
     modules: [
       {
         title: 'Kitchen Cleanliness and Safety',
@@ -84,7 +126,6 @@ const baseCourses = [
     id: 3,
     title: 'Puja Preparation and Altar Care',
     description: 'Priest and altar-support training for item handling, flower preparation, altar readiness, and respectful coordination.',
-    thumbnailUrl: courseThumbnails.puja,
     modules: [
       {
         title: 'Altar Readiness',
@@ -110,7 +151,6 @@ const baseCourses = [
     id: 4,
     title: 'Book Table and Outreach',
     description: 'Training for volunteers who support book tables, visitor conversations, literature care, and follow-up.',
-    thumbnailUrl: courseThumbnails.books,
     modules: [
       {
         title: 'Book Table Presence',
@@ -127,7 +167,6 @@ const baseCourses = [
     id: 5,
     title: 'Festival Volunteer Coordination',
     description: 'Role-neutral preparation for festivals, including crowd flow, announcements, volunteer handoffs, and closing duties.',
-    thumbnailUrl: courseThumbnails.festival,
     modules: [
       {
         title: 'Festival Day Readiness',
@@ -369,7 +408,6 @@ const generatedCourses = learningTracks
       id,
       title,
       description: `${category} training for volunteers who want a calm, practical, and devotional way to serve with confidence.`,
-      thumbnailUrl: courseThumbnails[track.thumbnail] || courseThumbnails.etiquette,
       roleName: track.roleName,
       categorySlugs: Array.from(new Set(index % 3 === 0 ? [track.category, 'beginner-seva'] : [track.category])),
       modules: buildGeneratedModules(title, category)
@@ -377,6 +415,12 @@ const generatedCourses = learningTracks
   }));
 
 const courses = [...baseCourses, ...generatedCourses].slice(0, 100);
+
+// Assign thumbnails round-robin across the whole course list so consecutive courses
+// (e.g. the 8 courses generated from one learning track) don't all share one image.
+courses.forEach((course, index) => {
+  course.thumbnailUrl = THUMBNAIL_POOL[index % THUMBNAIL_POOL.length];
+});
 
 const categories = [
   {
@@ -643,6 +687,7 @@ async function main() {
               externalResources: JSON.stringify(seedVideoForId(polyId).externalResources)
             }, transaction);
           } else {
+            const resourceType = type === 'EVENT' ? 'TEXT' : 'PDF';
             await upsert(`
               INSERT INTO resources (id, title, description, url, type, "createdAt", "updatedAt")
               VALUES (:id, :title, :description, :url, :resourceType, NOW(), NOW())
@@ -651,8 +696,10 @@ async function main() {
               id: polyId,
               title,
               description,
-              url: `https://templeinfo.org/resources/${polyId}`,
-              resourceType: type === 'EVENT' ? 'TEXT' : 'PDF'
+              url: resourceType === 'PDF'
+                ? PDF_RESOURCE_POOL[polyId % PDF_RESOURCE_POOL.length]
+                : `https://templeinfo.org/resources/${polyId}`,
+              resourceType
             }, transaction);
           }
 
