@@ -524,7 +524,7 @@ async function main() {
       await upsert(`
         INSERT INTO users (id, name, email, phone, "createdAt", "updatedAt")
         VALUES (:id, :name, :email, :phone, NOW(), NOW())
-        ON CONFLICT (email) DO UPDATE SET name = EXCLUDED.name, phone = EXCLUDED.phone, "updatedAt" = NOW(), "deletedAt" = NULL
+        ON CONFLICT (email, phone) DO UPDATE SET name = EXCLUDED.name, "updatedAt" = NOW(), "deletedAt" = NULL
       `, { id, name, email, phone }, transaction);
     }
 
