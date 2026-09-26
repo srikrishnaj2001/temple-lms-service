@@ -43,6 +43,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "ingest": "tsx src/scripts/ingest.ts",
+    "ingest:cron": "tsx src/scripts/ingest-cron.ts",
     "eval": "tsx src/scripts/eval.ts",
     "migrate": "tsx src/scripts/migrate.ts",
     "reset": "tsx src/scripts/reset.ts",

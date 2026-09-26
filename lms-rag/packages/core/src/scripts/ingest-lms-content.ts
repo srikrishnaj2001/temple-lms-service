@@ -86,8 +86,19 @@ function joinBody(...parts: (string | null | undefined)[]): string {
     .join('\n\n')
 }
 
-async function main() {
-  const args = parseArgs()
+export interface IngestSummary {
+  courses: { ingested: number; skipped: number }
+  modules: { ingested: number; skipped: number }
+  videos: { ingested: number; skipped: number }
+}
+
+/**
+ * Run the LMS-content ingest with the given options. Exported so cron / server
+ * callers can invoke it without spawning a subprocess. Does NOT close the DB
+ * connection — the caller is responsible for `rawSql().end()` when appropriate
+ * (a cron loop wants the pool kept warm; a one-shot CLI wants it closed).
+ */
+export async function runIngest(args: CliArgs): Promise<IngestSummary> {
   const sql = rawSql()
 
   // 1. Courses ---------------------------------------------------------------
@@ -236,10 +247,31 @@ async function main() {
   console.log(`Modules:  ingested=${modulesIngested}  skipped=${modulesSkipped}`)
   console.log(`Videos:   ingested=${videosIngested}   skipped=${videosSkipped}`)
 
-  await sql.end()
+  return {
+    courses: { ingested: coursesIngested, skipped: coursesSkipped },
+    modules: { ingested: modulesIngested, skipped: modulesSkipped },
+    videos: { ingested: videosIngested, skipped: videosSkipped },
+  }
 }
 
-main().catch((err) => {
-  console.error(err)
-  process.exit(1)
-})
+async function main() {
+  const args = parseArgs()
+  try {
+    await runIngest(args)
+  } finally {
+    await rawSql().end()
+  }
+}
+
+// CLI entry — only runs when invoked directly, not when imported.
+const isDirectRun =
+  import.meta.url === `file://${process.argv[1]?.replace(/\\/g, '/')}` ||
+  process.argv[1]?.endsWith('ingest-lms-content.ts') ||
+  process.argv[1]?.endsWith('ingest-lms-content.js')
+
+if (isDirectRun) {
+  main().catch((err) => {
+    console.error(err)
+    process.exit(1)
+  })
+}
