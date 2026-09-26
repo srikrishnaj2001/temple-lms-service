@@ -4,6 +4,7 @@ const os = require('os');
 const app = require('./app');
 const { sequelize } = require('../models');
 const { startRagProcess, stopRagProcess } = require('./ragProcess');
+const { startKeepAlive } = require('./keepAlive');
 
 const PORT = process.env.PORT || 8006;
 const WORKERS = process.env.WEB_CONCURRENCY || os.cpus().length;
@@ -13,6 +14,7 @@ const WORKERS = process.env.WEB_CONCURRENCY || os.cpus().length;
 // not each spawn their own copy.
 if (cluster.isMaster) {
   startRagProcess();
+  startKeepAlive();
 }
 
 // Cluster for production scalability
