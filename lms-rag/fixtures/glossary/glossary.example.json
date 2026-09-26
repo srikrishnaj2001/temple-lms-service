@@ -1,0 +1,52 @@
+[
+  {
+    "term": "prasad",
+    "variants": ["prasada", "prasadam", "prashad"],
+    "definition": "Sanctified food or offering distributed to devotees after being offered to a deity."
+  },
+  {
+    "term": "seva",
+    "variants": ["sewa"],
+    "definition": "Selfless service performed on behalf of a temple or deity, often by volunteers or paid staff."
+  },
+  {
+    "term": "annadaan",
+    "variants": ["annadan", "anna daan", "anna-dana"],
+    "definition": "The charitable donation of food, especially cooked meals served free at temples."
+  },
+  {
+    "term": "aarti",
+    "variants": ["arti", "arati"],
+    "definition": "A Hindu ritual of worship involving the circulation of light before a deity, typically performed at fixed times of day."
+  },
+  {
+    "term": "darshan",
+    "variants": ["darshana"],
+    "definition": "The auspicious viewing of a deity's murti (form) by a devotee."
+  },
+  {
+    "term": "panchang",
+    "variants": ["panchanga", "panchangam"],
+    "definition": "The Hindu almanac used to determine auspicious dates and times for rituals."
+  },
+  {
+    "term": "murti",
+    "variants": ["moorti", "moorthi"],
+    "definition": "A consecrated image or sculpted form of a deity used in worship."
+  },
+  {
+    "term": "mahaprasad",
+    "variants": ["mahaprasadam", "maha-prasad"],
+    "definition": "A large-scale prasad offering, typically distributed on festival days or after major rituals."
+  },
+  {
+    "term": "abhishekam",
+    "variants": ["abhishek", "abhishekam"],
+    "definition": "A ritual bathing of the deity's murti with substances such as milk, honey, ghee, or water."
+  },
+  {
+    "term": "yagna",
+    "variants": ["yajna", "yagya", "yagnya"],
+    "definition": "A Vedic fire ritual involving offerings into a consecrated fire."
+  }
+]

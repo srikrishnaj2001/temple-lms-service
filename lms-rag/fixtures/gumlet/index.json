@@ -1,0 +1,42 @@
+[
+  {
+    "videoId": "treasury-fundamentals",
+    "courseId": "treasury-finance",
+    "title": "Treasury Fundamentals — Sub-departments & Cash Flow",
+    "manifest": "manifests/dummy.m3u8",
+    "vtt": "vtts/treasury-fundamentals.vtt",
+    "playbackUrl": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4"
+  },
+  {
+    "videoId": "governance-basics",
+    "courseId": "governance-compliance",
+    "title": "Governance & Compliance — Board Roles and Risk",
+    "manifest": "manifests/dummy.m3u8",
+    "vtt": "vtts/governance-basics.vtt",
+    "playbackUrl": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4"
+  },
+  {
+    "videoId": "operations-facilities",
+    "courseId": "operations-facilities",
+    "title": "Operations & Facilities — Procurement to Supply Chain",
+    "manifest": "manifests/dummy.m3u8",
+    "vtt": "vtts/operations-facilities.vtt",
+    "playbackUrl": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4"
+  },
+  {
+    "videoId": "communications-it",
+    "courseId": "communications-it",
+    "title": "Communications & IT — PR, Analytics, Automation",
+    "manifest": "manifests/dummy.m3u8",
+    "vtt": "vtts/communications-it.vtt",
+    "playbackUrl": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4"
+  },
+  {
+    "videoId": "safety-training",
+    "courseId": "safety-training",
+    "title": "Safety & Training — Health, Safety, and People Development",
+    "manifest": "manifests/dummy.m3u8",
+    "vtt": "vtts/safety-training.vtt",
+    "playbackUrl": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.mp4"
+  }
+]

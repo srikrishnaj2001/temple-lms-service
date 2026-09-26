@@ -1,0 +1,13 @@
+{
+  "event": "asset.ready",
+  "asset_id": "temple-ops-101",
+  "duration_sec": 72,
+  "subtitles": [
+    {
+      "language": "en",
+      "rendition_uri": "subs/temple-ops-101.en.m3u8",
+      "source": "auto"
+    }
+  ],
+  "created_at": "2026-08-31T09:00:00Z"
+}

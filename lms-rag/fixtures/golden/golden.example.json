@@ -1,0 +1,37 @@
+[
+  {
+    "id": "q1",
+    "question": "What time does the temple kitchen open?",
+    "goldChunkIds": ["kitchen_operations_md#2", "daily_schedule_md#2"],
+    "goldVideoIds": ["annadaan-kitchen", "temple-ops-101"],
+    "tags": { "intent": "factual", "priority": "high" }
+  },
+  {
+    "id": "q2",
+    "question": "How is annadaan different from prasad?",
+    "goldChunkIds": ["kitchen_operations_md#0", "daily_schedule_md#2"],
+    "goldVideoIds": ["annadaan-kitchen"],
+    "tags": { "intent": "conceptual", "priority": "high" }
+  },
+  {
+    "id": "q3",
+    "question": "What happens on a Purnima day in terms of kitchen operations?",
+    "goldChunkIds": ["festival_calendar_md#1", "festival_calendar_md#3"],
+    "goldVideoIds": [],
+    "tags": { "intent": "howto", "priority": "medium" }
+  },
+  {
+    "id": "q4",
+    "question": "Who is responsible for the morning abhishekam?",
+    "goldChunkIds": ["daily_schedule_md#1"],
+    "goldVideoIds": ["temple-ops-101"],
+    "tags": { "intent": "factual", "priority": "high" }
+  },
+  {
+    "id": "q5",
+    "question": "What are the non-negotiable hygiene rules in the temple kitchen?",
+    "goldChunkIds": ["kitchen_operations_md#4"],
+    "goldVideoIds": ["annadaan-kitchen"],
+    "tags": { "intent": "policy", "priority": "high" }
+  }
+]

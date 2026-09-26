@@ -1,0 +1,33 @@
+WEBVTT
+
+c1
+00:00:00.000 --> 00:00:08.000
+Welcome to Communications and IT. This covers PR strategy, IT systems, and analytics for temple management.
+
+c2
+00:00:08.500 --> 00:00:18.000
+Communication and PR handles donor communications, press relations, social media, and crisis response. All external statements follow the approved messaging playbook.
+
+c3
+00:00:18.500 --> 00:00:28.000
+IT and Automation covers infrastructure, software systems, cybersecurity, and process automation across all departments.
+
+c4
+00:00:28.500 --> 00:00:40.000
+Analytics and Intelligence provides dashboards for visitor footfall, donation trends, kitchen consumption, and department-level KPIs reported to the board.
+
+c5
+00:00:40.500 --> 00:00:52.000
+IT systems include the donor CRM, accounting software, HR and payroll systems, and inventory management tools. Access is role-based and reviewed quarterly.
+
+c6
+00:00:52.500 --> 00:01:04.000
+Data quality is critical for analytics: single source of truth, defined data owners per domain, and daily reconciliation between source systems and the analytics warehouse.
+
+c7
+00:01:04.500 --> 00:01:16.000
+Communication protocols require sensitive donor information to be masked in reports and only shared with roles authorized by the Communication head.
+
+c8
+00:01:16.500 --> 00:01:28.000
+Automation opportunities include automated donation receipts, scheduled compliance reports, and vendor payment reminders. Each automation is documented and monitored.
