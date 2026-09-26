@@ -3,9 +3,17 @@ const cluster = require('cluster');
 const os = require('os');
 const app = require('./app');
 const { sequelize } = require('../models');
+const { startRagProcess, stopRagProcess } = require('./ragProcess');
 
 const PORT = process.env.PORT || 8006;
 const WORKERS = process.env.WEB_CONCURRENCY || os.cpus().length;
+
+// lms-rag runs as a sibling process on this same container (proxied via
+// /rag in app.js). Only the cluster master starts it — forked workers must
+// not each spawn their own copy.
+if (cluster.isMaster) {
+  startRagProcess();
+}
 
 // Cluster for production scalability
 if (cluster.isMaster && process.env.NODE_ENV === 'production') {
@@ -26,6 +34,7 @@ if (cluster.isMaster && process.env.NODE_ENV === 'production') {
   // Graceful shutdown for master
   const shutdownMaster = () => {
     console.log('Master shutting down...');
+    stopRagProcess();
     for (const id in cluster.workers) {
       cluster.workers[id].kill();
     }
@@ -94,7 +103,8 @@ if (cluster.isMaster && process.env.NODE_ENV === 'production') {
   const shutdown = async (signal) => {
     const workerId = cluster.worker ? cluster.worker.id : 'single';
     console.log(`Worker ${workerId} received ${signal}, shutting down gracefully...`);
-    
+    if (cluster.isMaster) stopRagProcess();
+
     server.close(async () => {
       console.log(`Worker ${workerId}: HTTP server closed`);
       

@@ -20,7 +20,11 @@ async function build() {
     keepAliveTimeout: 60_000,
   })
 
-  await app.register(cors, { origin: true, credentials: true })
+  // CORS is handled by the Express app in lms-service, which proxies /rag/*
+  // to this internal-only port — this process is never reached directly
+  // from a browser, so it doesn't need to set its own CORS headers (and
+  // shouldn't, to avoid duplicate Access-Control-Allow-Origin headers).
+  await app.register(cors, { origin: false, credentials: true })
 
   registerAdminAuth(app)
   registerLearnerAuth(app)

@@ -5,6 +5,7 @@ const cors = require('cors');
 const compression = require('compression');
 const rateLimit = require('express-rate-limit');
 const { ipKeyGenerator } = require('express-rate-limit');
+const { createProxyMiddleware } = require('http-proxy-middleware');
 const { sequelize } = require('../models');
 const coursesRouter = require('./routers/courses');
 
@@ -76,6 +77,19 @@ app.use(cors({
   maxAge: 86400, // 24 hours
   preflightContinue: false,
   optionsSuccessStatus: 200
+}));
+
+// AI Guru RAG service (lms-rag) runs as a separate process on this same
+// container, listening on an internal-only port. Proxied here (before body
+// parsing/compression) so its own SSE streams and request bodies pass
+// through untouched, and it's mounted before compression specifically so
+// streamed /rag/ask responses never get gzip-buffered.
+const RAG_INTERNAL_PORT = process.env.RAG_INTERNAL_PORT || 3100;
+app.use('/rag', createProxyMiddleware({
+  target: `http://127.0.0.1:${RAG_INTERNAL_PORT}`,
+  changeOrigin: true,
+  pathRewrite: { '^/rag': '' },
+  ws: false,
 }));
 
 // Compression with better settings

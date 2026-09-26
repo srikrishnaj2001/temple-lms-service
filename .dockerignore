@@ -1,0 +1,10 @@
+node_modules
+lms-rag/node_modules
+lms-rag/**/node_modules
+lms-rag/**/dist
+lms-rag/**/.cache
+.git
+logs
+*.log
+.env
+.env.local
