@@ -57,10 +57,12 @@ async function seedLibraryExamples() {
           startDate: new Date('2026-01-01'),
         }, { transaction });
       }
+      const checklistUrl = `${origin}/resources/seva-checklist.html`;
       const [resource] = await Resource.findOrCreate({ where: { title: `${example.readTitle} - checklist` }, defaults: {
         description: 'A quick reference to open alongside your service.', type: 'URL',
-        url: `${origin}/resources/seva-checklist.html`, summary, externalResources,
+        url: checklistUrl, summary, externalResources,
       }, transaction });
+      if (resource.url !== checklistUrl) await resource.update({ url: checklistUrl }, { transaction });
       if (!(await Content.findOne({ where: { moduleId: module.id, contentType: 'RESOURCE', contentId: resource.id }, transaction }))) {
         await Content.create({ moduleId: module.id, contentType: 'RESOURCE', contentId: resource.id,
           sequenceNumber: (await Content.max('sequenceNumber', { where: { moduleId: module.id }, transaction }) || 0) + 1, startDate: new Date('2026-01-01'),

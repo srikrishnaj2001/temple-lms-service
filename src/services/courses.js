@@ -158,7 +158,10 @@ class CourseService {
           lastAccessedAt: enrollment.lastAccessedAt || null
         })),
         enrollmentId: enrollment.id
-      }));
+      }))
+      // A course with no content yet isn't ready for a learner to "start" —
+      // don't expose it as an enrolled, clickable course until it has some.
+      .filter((course) => course.sectionCount > 0);
   }
 
   async getCatalogCourses(tenantId = null) {
@@ -196,7 +199,9 @@ class CourseService {
       order: [['createdAt', 'DESC']]
     });
 
-    return courses.map(mapCourseSummary);
+    // Same reasoning as getEnrolledCourses: an empty course isn't ready to
+    // be browsed/started yet.
+    return courses.map(mapCourseSummary).filter((course) => course.sectionCount > 0);
   }
 
   async getDashboardCourse(userEmail, tenantId = null) {
