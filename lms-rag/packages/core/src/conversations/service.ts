@@ -69,6 +69,7 @@ export interface ConversationSummary {
 export interface MessageRecord {
   id: string
   role: 'user' | 'assistant'
+  channel: 'text' | 'voice'
   content: string
   citations: unknown
   watchNext: unknown
@@ -115,6 +116,7 @@ export async function getMessages(user: UserContext, conversationId: string): Pr
   return rows.map((r) => ({
     id: r.id,
     role: r.role as 'user' | 'assistant',
+    channel: (r.channel as 'text' | 'voice' | undefined) ?? 'text',
     content: r.content,
     citations: r.citations,
     watchNext: r.watchNext,
@@ -162,6 +164,8 @@ export interface AppendMessageInput {
   conversationId: string
   role: 'user' | 'assistant'
   content: string
+  /** Where the turn came from. Defaults to 'text' for backwards compat. */
+  channel?: 'text' | 'voice'
   citations?: unknown
   watchNext?: unknown
   followUps?: unknown
@@ -174,6 +178,7 @@ export async function appendMessage(input: AppendMessageInput): Promise<string> 
     .values({
       conversationId: input.conversationId,
       role: input.role,
+      channel: input.channel ?? 'text',
       content: input.content,
       citations: input.citations ?? null,
       watchNext: input.watchNext ?? null,
