@@ -4,6 +4,7 @@ import cors from '@fastify/cors'
 import { config } from '@ai-guru/core'
 import { registerAdminAuth } from './admin-auth.js'
 import { registerLearnerAuth } from './learner-auth.js'
+import { startIngestCron } from './ingest-cron.js'
 import { startIngestQueue } from './queue-worker.js'
 import { adminRoute } from './routes/admin.js'
 import { askRoute } from './routes/ask.js'
@@ -49,6 +50,12 @@ async function main() {
   if (process.env.INGEST_WORKER_DISABLED !== '1') {
     startIngestQueue(app.log)
   }
+
+  // Auto-ingest scheduler — every 60s, pull fresh courses/modules/videos
+  // from lms-service tables and re-embed anything new/changed. Idempotent
+  // via content hashing so idle ticks are ~1-2s of "nothing to do."
+  // Set INGEST_CRON_DISABLED=1 to disable (e.g., on read-only replicas).
+  startIngestCron(app.log)
 }
 
 main().catch((err) => {
