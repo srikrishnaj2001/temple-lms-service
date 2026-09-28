@@ -8,6 +8,7 @@ import { startIngestCron } from './ingest-cron.js'
 import { startIngestQueue } from './queue-worker.js'
 import { adminRoute } from './routes/admin.js'
 import { askRoute } from './routes/ask.js'
+import { askSyncRoute } from './routes/ask-sync.js'
 import { conversationsRoute } from './routes/conversations.js'
 import { healthRoute } from './routes/health.js'
 import { searchRoute } from './routes/search.js'
@@ -33,6 +34,7 @@ async function build() {
   await app.register(healthRoute)
   await app.register(adminRoute)
   await app.register(askRoute)
+  await app.register(askSyncRoute)
   await app.register(searchRoute)
   await app.register(conversationsRoute)
 

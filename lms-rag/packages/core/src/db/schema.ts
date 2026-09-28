@@ -172,6 +172,8 @@ export const ragMessages = pgTable(
       .notNull()
       .references(() => ragConversations.id, { onDelete: 'cascade' }),
     role: text('role').notNull(), // 'user' | 'assistant'
+    /** 'text' (default) | 'voice' — voice turns come from ElevenLabs agent via /ask/sync. */
+    channel: text('channel').notNull().default('text'),
     content: text('content').notNull(),
     citations: jsonb('citations'),
     watchNext: jsonb('watchNext'),
