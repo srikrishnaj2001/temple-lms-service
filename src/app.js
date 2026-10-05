@@ -199,6 +199,10 @@ app.use('/api/tenants', tenantsRouter);
 const adminRouter = require('./routers/adminRoutes');
 app.use('/api', adminRouter);
 
+const { adminQuizRouter, learnerQuizRouter } = require('./routers/quizRoutes');
+app.use('/api', adminQuizRouter);
+app.use('/v1', learnerQuizRouter);
+
 const announcementsRouter = require('./routers/announcements');
 app.use('/api/announcements', announcementsRouter);
 

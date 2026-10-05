@@ -20,6 +20,12 @@ module.exports = (sequelize, DataTypes) => {
       allowNull: true
     },
     summary: { type: DataTypes.TEXT, allowNull: true },
+    extractedText: {
+      type: DataTypes.TEXT,
+      field: 'extracted_text',
+      allowNull: true,
+      comment: 'Plain text extracted from PDF — used for quiz LLM context'
+    },
     externalResources: { type: DataTypes.JSONB, field: 'external_resources', allowNull: false, defaultValue: [] },
     url: {
       type: DataTypes.STRING,
