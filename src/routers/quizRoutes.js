@@ -228,9 +228,13 @@ adminQuizRouter.get('/quizzes', async (req, res) => {
 
 const learnerQuizRouter = express.Router();
 
-/** Resolve the learner's user ID from the email header. */
+/**
+ * Resolve the learner's user ID from the email header. Emails are stored
+ * lowercase, and the header carries whatever casing Clerk has on file, so
+ * normalize before matching — same as every other learner route.
+ */
 async function resolveUserId(req, res) {
-  const user = await User.findOne({ where: { email: req.userEmail } });
+  const user = await User.findOne({ where: { email: User.normalizeEmail(req.userEmail) } });
   if (!user) {
     res.status(404).json({ success: false, error: 'Learner account not found' });
     return null;
