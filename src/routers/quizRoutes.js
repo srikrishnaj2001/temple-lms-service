@@ -1,4 +1,5 @@
 const express = require('express');
+const { QueryTypes } = require('sequelize');
 const quizService = require('../services/quizService');
 const { checkUserEmail } = require('../middlewares/authMiddleware');
 const {
@@ -242,12 +243,57 @@ async function resolveUserId(req, res) {
   return user.id;
 }
 
+/**
+ * A learner may only read or answer assessments inside a course they are
+ * actually enrolled in. Every other /v1 route enforces this (see
+ * coursesService.getCourseLibrary / updateContentProgress); without it any
+ * signed-in learner could pull questions from any published assessment in
+ * the LMS by guessing content IDs.
+ */
+async function isEnrolledInCourse(userId, courseId) {
+  const [row] = await sequelize.query(`
+    SELECT e.id
+    FROM enrollments e
+    WHERE e."courseId" = :courseId
+      AND e."userId" = :userId
+      AND e."deletedAt" IS NULL
+    LIMIT 1
+  `, { replacements: { courseId, userId }, type: QueryTypes.SELECT });
+  return Boolean(row);
+}
+
+/** Same check, resolved through the lesson that owns the assessment. */
+async function isEnrolledForContent(userId, contentId) {
+  const [row] = await sequelize.query(`
+    SELECT e.id
+    FROM contents ct
+    JOIN modules m ON ct."moduleId" = m.id
+    JOIN enrollments e ON e."courseId" = m."courseId"
+    WHERE ct.id = :contentId
+      AND e."userId" = :userId
+      AND e."deletedAt" IS NULL
+      AND ct."deletedAt" IS NULL
+      AND m."deletedAt" IS NULL
+    LIMIT 1
+  `, { replacements: { contentId, userId }, type: QueryTypes.SELECT });
+  return Boolean(row);
+}
+
+const NOT_ENROLLED = { success: false, error: 'You are not enrolled in the course for this assessment' };
+
 // GET /v1/content/:contentId/quiz
 // Returns a published quiz WITHOUT revealing which options are correct.
 // Learner app renders questions + options; server scores on submit.
 learnerQuizRouter.get('/content/:contentId/quiz', checkUserEmail, async (req, res) => {
   try {
     const contentId = Number(req.params.contentId);
+
+    const userId = await resolveUserId(req, res);
+    if (!userId) return;
+    if (!await isEnrolledForContent(userId, contentId)) {
+      return res.status(403).json(NOT_ENROLLED);
+    }
+
     const quiz = await Quiz.findOne({
       where: { contentId, isPublished: true },
       include: [{
@@ -310,6 +356,11 @@ learnerQuizRouter.post('/quizzes/:quizId/attempts', checkUserEmail, async (req, 
       return res.status(404).json({ success: false, error: 'Quiz not found or not published' });
     }
 
+    if (!await isEnrolledForContent(userId, quiz.contentId)) {
+      await t.rollback();
+      return res.status(403).json(NOT_ENROLLED);
+    }
+
     let correctCount = 0;
     const perQuestion = [];
     for (const q of (quiz.questions || [])) {
@@ -366,6 +417,13 @@ learnerQuizRouter.post('/quizzes/:quizId/attempts', checkUserEmail, async (req, 
 learnerQuizRouter.get('/courses/:courseId/quiz-content-ids', checkUserEmail, async (req, res) => {
   try {
     const courseId = Number(req.params.courseId);
+
+    const userId = await resolveUserId(req, res);
+    if (!userId) return;
+    if (!await isEnrolledInCourse(userId, courseId)) {
+      return res.status(403).json(NOT_ENROLLED);
+    }
+
     const { Content, Module } = require('../../models');
     const rows = await Quiz.findAll({
       where: { isPublished: true },

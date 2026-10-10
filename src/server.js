@@ -5,9 +5,37 @@ const app = require('./app');
 const { sequelize } = require('../models');
 const { startRagProcess, stopRagProcess } = require('./ragProcess');
 const { startKeepAlive } = require('./keepAlive');
+const { runMigrations } = require('./migrate');
 
 const PORT = process.env.PORT || 8006;
 const WORKERS = process.env.WEB_CONCURRENCY || os.cpus().length;
+
+/**
+ * Bring the schema up to date before this deploy serves any traffic.
+ *
+ * Only one process per container does this — the cluster master in
+ * production, or the single process in development. Forked workers skip it
+ * because the master has already finished before it forks them.
+ *
+ * A failure here is fatal on purpose: serving requests against a schema the
+ * code does not match breaks every route touching the changed table, which is
+ * far worse than a failed deploy. Set AUTO_MIGRATE=0 to opt out and run
+ * `npm run migrate` by hand instead.
+ */
+async function migrateIfPrimary() {
+  if (!cluster.isMaster) return;
+  if (process.env.AUTO_MIGRATE === '0') {
+    console.log('[migrate] AUTO_MIGRATE=0 — skipping automatic migrations');
+    return;
+  }
+  await runMigrations();
+}
+
+function abortOnMigrationFailure(err) {
+  console.error('[migrate] FAILED — refusing to serve traffic against a stale schema');
+  console.error(err);
+  process.exit(1);
+}
 
 // lms-rag runs as a sibling process on this same container (proxied via
 // /rag in app.js). Only the cluster master starts it — forked workers must
@@ -20,12 +48,17 @@ if (cluster.isMaster) {
 // Cluster for production scalability
 if (cluster.isMaster && process.env.NODE_ENV === 'production') {
   console.log(`Master ${process.pid} is running`);
-  console.log(`Starting ${WORKERS} workers...`);
 
-  // Fork workers
-  for (let i = 0; i < WORKERS; i++) {
-    cluster.fork();
-  }
+  // Workers are forked only once the schema is current, so no worker can
+  // answer a request against a column its models expect but the DB lacks.
+  migrateIfPrimary()
+    .then(() => {
+      console.log(`Starting ${WORKERS} workers...`);
+      for (let i = 0; i < WORKERS; i++) {
+        cluster.fork();
+      }
+    })
+    .catch(abortOnMigrationFailure);
 
   cluster.on('exit', (worker, code, signal) => {
     console.log(`Worker ${worker.process.pid} died with code ${code} and signal ${signal}`);
@@ -67,25 +100,32 @@ if (cluster.isMaster && process.env.NODE_ENV === 'production') {
   server.timeout = 120000;         // 2 minutes
   server.maxHeadersCount = 1000;   // Prevent header overflow attacks
 
-  server.listen(PORT, async () => {
-    const workerId = cluster.worker ? cluster.worker.id : 'single';
-    console.log(`🚀 Worker ${workerId} (PID: ${process.pid}) listening on port ${PORT}`);
-    
-    try {
-      // Test database connection but don't sync in production
-      await sequelize.authenticate();
-      console.log(`Worker ${workerId}: Database connection established`);
-      
-      // Only sync in development
-      if (process.env.NODE_ENV !== 'production') {
-        await sequelize.sync({ alter: false });
-        console.log(`Worker ${workerId}: Database synced`);
+  // In production this is a forked worker and migrateIfPrimary() is a no-op
+  // (the master already migrated). In development this is the only process,
+  // so it migrates before binding the port.
+  migrateIfPrimary().then(startListening).catch(abortOnMigrationFailure);
+
+  function startListening() {
+    server.listen(PORT, async () => {
+      const workerId = cluster.worker ? cluster.worker.id : 'single';
+      console.log(`🚀 Worker ${workerId} (PID: ${process.pid}) listening on port ${PORT}`);
+
+      try {
+        // Test database connection but don't sync in production
+        await sequelize.authenticate();
+        console.log(`Worker ${workerId}: Database connection established`);
+
+        // Only sync in development
+        if (process.env.NODE_ENV !== 'production') {
+          await sequelize.sync({ alter: false });
+          console.log(`Worker ${workerId}: Database synced`);
+        }
+      } catch (err) {
+        console.error(`Worker ${workerId}: Database connection failed:`, err);
+        process.exit(1);
       }
-    } catch (err) {
-      console.error(`Worker ${workerId}: Database connection failed:`, err);
-      process.exit(1);
-    }
-  });
+    });
+  }
 
   // Enhanced error handling
   server.on('error', (err) => {
