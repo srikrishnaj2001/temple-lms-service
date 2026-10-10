@@ -1,5 +1,7 @@
 'use strict';
 
+if (require.main === module) require('./retired-demo-data')();
+
 const fs = require('node:fs');
 const path = require('node:path');
 require('dotenv').config({ path: path.join(__dirname, '../.env') });

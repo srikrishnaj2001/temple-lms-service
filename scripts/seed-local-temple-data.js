@@ -1,5 +1,7 @@
 'use strict';
 
+if (require.main === module) require('./retired-demo-data')();
+
 require('dotenv').config();
 const { sequelize } = require('../models');
 const { seedVideoForId } = require('../src/utils/gumlet-seed-assets');
