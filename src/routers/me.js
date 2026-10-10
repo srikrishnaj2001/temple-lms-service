@@ -35,14 +35,18 @@ meRouter.patch('/', checkUserEmail, async (req, res) => {
     }
 
     const { displayName } = req.body || {};
-    if (typeof displayName === 'string') {
-      const trimmed = displayName.trim();
-      if (!trimmed) {
-        return res.status(400).json({ error: 'displayName cannot be empty' });
-      }
-      user.displayName = trimmed;
-      await user.save();
+    if (typeof displayName !== 'string') {
+      return res.status(400).json({ error: 'displayName must be a string' });
     }
+    const trimmed = displayName.trim();
+    if (!trimmed) {
+      return res.status(400).json({ error: 'displayName cannot be empty' });
+    }
+    if (trimmed.length > 255 || /[\u0000-\u001f\u007f]/u.test(trimmed)) {
+      return res.status(400).json({ error: 'Use a name of up to 255 characters without line breaks or control characters.' });
+    }
+    user.displayName = trimmed;
+    await user.save();
 
     res.status(200).json(serializeUser(user));
   } catch (error) {
