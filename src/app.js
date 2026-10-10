@@ -189,6 +189,9 @@ app.use('/v1/announcements', studentAnnouncementsRouter);
 const onboardingRouter = require('./routers/onboarding');
 app.use('/v1/onboarding', onboardingRouter);
 
+const meRouter = require('./routers/me');
+app.use('/v1/me', meRouter);
+
 const tenantsRouter = require('./routers/tenants');
 const adminAuth = require('./routers/adminAuth');
 app.use('/api/auth', adminAuth.router);
