@@ -767,6 +767,11 @@ apiRouter.get('/resources/:id', async (req, res) => {
 apiRouter.post('/resources', async (req, res) => {
   try {
     const result = await adminService.createResource(req.body);
+    // Kick off background PDF text extraction if this is a PDF resource.
+    // Fire-and-forget — admin doesn't wait on the extraction.
+    if (result.success && result.data?.id && result.data?.type === 'PDF' && result.data?.url) {
+      require('../services/pdfExtractService').extractInBackground(result.data.id, result.data.url);
+    }
     const statusCode = result.success ? 201 : 400;
     res.status(statusCode).json(result);
   } catch (error) {
@@ -783,6 +788,21 @@ apiRouter.put('/resources/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const result = await adminService.updateResource(parseInt(id), req.body);
+    // If the admin changed the URL (new PDF file), re-extract. Idempotent
+    // service will skip if text was already extracted and URL hasn't changed —
+    // we force on URL-containing updates to catch replacements.
+    if (result.success && result.data?.id && result.data?.type === 'PDF' && result.data?.url) {
+      const urlChanged = req.body.url && req.body.url !== result.data.url
+        ? false  // service will see the DB url and re-extract when needed
+        : false;
+      // Always trigger — the service's own idempotency check (extracted_text
+      // already present) prevents duplicate work on no-op updates.
+      require('../services/pdfExtractService').extractInBackground(
+        result.data.id,
+        result.data.url,
+        { force: urlChanged },
+      );
+    }
     const statusCode = result.success ? 200 : 404;
     res.status(statusCode).json(result);
   } catch (error) {

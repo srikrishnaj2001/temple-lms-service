@@ -19,7 +19,11 @@ module.exports = (models) => {
     EnrollmentContentProgress,
     Announcement,
     AnnouncementCourse,
-    AnnouncementRead
+    AnnouncementRead,
+    Quiz,
+    QuizQuestion,
+    QuizOption,
+    QuizAttempt
   } = models;
 
   if (Tenant && Course) {
@@ -235,5 +239,30 @@ module.exports = (models) => {
       foreignKey: 'userId',
       as: 'user'
     });
+  }
+
+  // -------- Quiz feature --------
+  // Lesson-wise: one quiz per Content (lesson). Quiz has questions, each
+  // question has options. Attempts record learner submissions.
+  if (Quiz && Content) {
+    Content.hasOne(Quiz, { foreignKey: 'contentId', as: 'quiz', onDelete: 'CASCADE' });
+    Quiz.belongsTo(Content, { foreignKey: 'contentId', as: 'content' });
+  }
+
+  if (Quiz && QuizQuestion) {
+    Quiz.hasMany(QuizQuestion, { foreignKey: 'quizId', as: 'questions', onDelete: 'CASCADE' });
+    QuizQuestion.belongsTo(Quiz, { foreignKey: 'quizId', as: 'quiz' });
+  }
+
+  if (QuizQuestion && QuizOption) {
+    QuizQuestion.hasMany(QuizOption, { foreignKey: 'questionId', as: 'options', onDelete: 'CASCADE' });
+    QuizOption.belongsTo(QuizQuestion, { foreignKey: 'questionId', as: 'question' });
+  }
+
+  if (Quiz && QuizAttempt && User) {
+    Quiz.hasMany(QuizAttempt, { foreignKey: 'quizId', as: 'attempts', onDelete: 'CASCADE' });
+    QuizAttempt.belongsTo(Quiz, { foreignKey: 'quizId', as: 'quiz' });
+    User.hasMany(QuizAttempt, { foreignKey: 'userId', as: 'quizAttempts', onDelete: 'CASCADE' });
+    QuizAttempt.belongsTo(User, { foreignKey: 'userId', as: 'user' });
   }
 };
