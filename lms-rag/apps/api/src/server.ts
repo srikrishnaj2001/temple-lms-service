@@ -4,7 +4,7 @@ import cors from '@fastify/cors'
 import { config } from '@ai-guru/core'
 import { registerAdminAuth } from './admin-auth.js'
 import { registerLearnerAuth } from './learner-auth.js'
-import { startIngestCron } from './ingest-cron.js'
+import { startIngestCron, startLibraryIngestCron } from './ingest-cron.js'
 import { startIngestQueue } from './queue-worker.js'
 import { adminRoute } from './routes/admin.js'
 import { askRoute } from './routes/ask.js'
@@ -58,6 +58,12 @@ async function main() {
   // via content hashing so idle ticks are ~1-2s of "nothing to do."
   // Set INGEST_CRON_DISABLED=1 to disable (e.g., on read-only replicas).
   startIngestCron(app.log)
+
+  // Reading-library auto-ingest — hourly pull of the public templeinfo.org
+  // catalogue (74 books) so AI Guru and search can ground on book content.
+  // Independent advisory lock, so this never blocks the per-minute LMS tick.
+  // Set LIBRARY_INGEST_CRON_DISABLED=1 to disable.
+  startLibraryIngestCron(app.log)
 }
 
 main().catch((err) => {

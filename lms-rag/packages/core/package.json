@@ -44,6 +44,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "ingest": "tsx src/scripts/ingest.ts",
     "ingest:cron": "tsx src/scripts/ingest-cron.ts",
+    "ingest:library": "tsx src/scripts/ingest-reading-library.ts",
     "eval": "tsx src/scripts/eval.ts",
     "migrate": "tsx src/scripts/migrate.ts",
     "reset": "tsx src/scripts/reset.ts",
@@ -58,6 +59,7 @@
     "gpt-tokenizer": "^2.5.1",
     "jsonwebtoken": "^9.0.2",
     "mammoth": "^1.8.0",
+    "node-html-parser": "^6.1.13",
     "pg": "^8.13.1",
     "postgres": "^3.4.5",
     "zod": "^3.23.8"
