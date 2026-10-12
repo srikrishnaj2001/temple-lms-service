@@ -4,6 +4,13 @@ export interface VectorHit {
   id: string
   sourceId: string
   sourceTitle: string
+  /** rag_sources.kind — 'document' | 'video' | 'library'. Lets downstream
+   *  code (e.g. /search) format library hits with reader URLs. */
+  sourceKind?: string
+  /** rag_sources.metadata (jsonb). For library sources carries
+   *  { bookId, bookTitle, authorName, category, apiPage, totalPages,
+   *    readerUrl, ... }. Other kinds may be empty. */
+  sourceMetadata?: Record<string, unknown>
   headingTrail: string[]
   text: string
   /** distance in [0,2] for cosine — smaller is closer */
@@ -40,6 +47,8 @@ export async function vectorSearchChunks(
       id: string
       source_id: string
       source_title: string
+      source_kind: string | null
+      source_metadata: Record<string, unknown> | null
       heading_trail: string[]
       text: string
       distance: number
@@ -52,6 +61,8 @@ export async function vectorSearchChunks(
     SELECT c.id,
            c."sourceId"    AS source_id,
            s.title         AS source_title,
+           s.kind          AS source_kind,
+           s.metadata      AS source_metadata,
            c."headingTrail" AS heading_trail,
            c.text,
            c.embedding <=> ${literal}::vector AS distance,
@@ -64,8 +75,8 @@ export async function vectorSearchChunks(
       LEFT JOIN courses co ON co.id = c."courseId"
       LEFT JOIN modules m  ON m.id = c."moduleId"
      WHERE c.embedding IS NOT NULL
-       ${tenantScoped ? sql`AND c."tenantId" = ${tenantId}::uuid` : sql``}
-       ${scoped ? sql`AND c."courseId" = ANY(${courseIds as number[]}::int[])` : sql``}
+       ${tenantScoped ? sql`AND (c."tenantId" = ${tenantId}::uuid OR c."tenantId" IS NULL)` : sql``}
+       ${scoped ? sql`AND (c."courseId" = ANY(${courseIds as number[]}::int[]) OR c."courseId" IS NULL)` : sql``}
      ORDER BY c.embedding <=> ${literal}::vector
      LIMIT ${limit}
   `
@@ -73,6 +84,8 @@ export async function vectorSearchChunks(
     id: r.id,
     sourceId: r.source_id,
     sourceTitle: r.source_title,
+    sourceKind: r.source_kind ?? undefined,
+    sourceMetadata: r.source_metadata ?? undefined,
     headingTrail: r.heading_trail ?? [],
     text: r.text,
     distance: Number(r.distance),

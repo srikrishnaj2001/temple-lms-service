@@ -84,15 +84,19 @@ export async function ingestDocument(
   opts: IngestOptions = {},
 ): Promise<{ ingested: boolean; chunkCount: number }> {
   const hash = createHash('sha256').update(doc.text).digest('hex')
-  if (opts.courseId == null) {
+  const kind = opts.kind ?? 'document'
+  // courseId is required for every kind except 'library' — library content is
+  // cross-course and lives on rag_sources with courseId=NULL.
+  if (kind !== 'library' && opts.courseId == null) {
     throw new Error('ingestDocument: courseId is required (integer, from lms-service courses.id)')
   }
-  const courseId = opts.courseId
+  const courseId = opts.courseId ?? null
   const moduleId = opts.moduleId ?? null
   const contentId = opts.contentId ?? null
   const videoId = opts.videoId ?? null
-  const tenantId = opts.tenantId ?? DEV_TENANT_ID
-  const kind = opts.kind ?? 'document'
+  // Library content has no owning tenant — pass NULL rather than DEV_TENANT_ID
+  // so retrieval's `s.kind = 'library'` branch is the only path that returns it.
+  const tenantId = kind === 'library' ? (opts.tenantId ?? null) : (opts.tenantId ?? DEV_TENANT_ID)
   const metadata = opts.metadata ?? {}
 
   if (!opts.dryRun) {
@@ -253,7 +257,9 @@ export function hashText(t: string): string {
 export interface TextIngestInput {
   /** stable id — use `${moduleId}:${contentId}:body` for one text body per content */
   sourceId: string
-  courseId: number
+  /** Required for 'document' and 'video' kinds (every LMS asset lives in a
+   *  course). NULL for 'library' content which is cross-tenant/cross-course. */
+  courseId: number | null
   moduleId?: number
   contentId?: number
   title: string
@@ -274,7 +280,8 @@ export async function ingestText(input: TextIngestInput, opts: IngestOptions = {
     { id: input.sourceId, title: input.title, text: input.text },
     {
       ...opts,
-      courseId: input.courseId,
+      // input.courseId can be null for library content; pipeline accepts null.
+      courseId: input.courseId ?? undefined,
       moduleId: input.moduleId,
       contentId: input.contentId,
     },

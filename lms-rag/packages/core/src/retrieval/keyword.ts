@@ -15,6 +15,10 @@ export interface KeywordHit {
   id: string
   sourceId?: string
   sourceTitle?: string
+  /** rag_sources.kind — 'document' | 'video' | 'library'. */
+  sourceKind?: string
+  /** rag_sources.metadata (jsonb). Carries reader URL + bookId for library hits. */
+  sourceMetadata?: Record<string, unknown>
   headingTrail?: string[]
   text: string
   videoId?: number
@@ -41,6 +45,8 @@ export async function keywordSearchChunks(
       id: string
       source_id: string
       source_title: string
+      source_kind: string | null
+      source_metadata: Record<string, unknown> | null
       heading_trail: string[]
       text: string
       score: number
@@ -49,14 +55,16 @@ export async function keywordSearchChunks(
     SELECT c.id,
            c."sourceId"     AS source_id,
            s.title          AS source_title,
+           s.kind           AS source_kind,
+           s.metadata       AS source_metadata,
            c."headingTrail" AS heading_trail,
            c.text,
            ts_rank_cd(c.text_search, websearch_to_tsquery('english', ${query})) AS score
       FROM rag_chunks c
       JOIN rag_sources s ON s.id = c."sourceId"
      WHERE c.text_search @@ websearch_to_tsquery('english', ${query})
-       ${tenantScoped ? sql`AND c."tenantId" = ${tenantId}::uuid` : sql``}
-       ${scoped ? sql`AND c."courseId" = ANY(${courseIds as number[]}::int[])` : sql``}
+       ${tenantScoped ? sql`AND (c."tenantId" = ${tenantId}::uuid OR c."tenantId" IS NULL)` : sql``}
+       ${scoped ? sql`AND (c."courseId" = ANY(${courseIds as number[]}::int[]) OR c."courseId" IS NULL)` : sql``}
      ORDER BY score DESC
      LIMIT ${limit}
   `
@@ -64,6 +72,8 @@ export async function keywordSearchChunks(
     id: r.id,
     sourceId: r.source_id,
     sourceTitle: r.source_title,
+    sourceKind: r.source_kind ?? undefined,
+    sourceMetadata: r.source_metadata ?? undefined,
     headingTrail: r.heading_trail ?? [],
     text: r.text,
     score: Number(r.score),

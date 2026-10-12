@@ -69,6 +69,22 @@ interface VideoHit {
   snippet: string
   startSec: number
 }
+interface LibraryHit {
+  /** Synthetic stable id (hash of bookId:page or bookId:catalog). */
+  id: number
+  bookId: string
+  bookTitle: string
+  /** 0 for catalogue entries; 1..N for a specific book page. */
+  apiPage: number
+  totalPages: number
+  category?: string
+  subcategory?: string
+  url: string
+  snippet?: string
+  /** True when this hit represents the whole book (catalogue entry) rather
+   *  than a specific page. Frontend uses it to drop the "— Page N" suffix. */
+  isCatalog?: boolean
+}
 
 const OFF_TOPIC_TOKEN = '__OFF_TOPIC__'
 const STOPWORDS = new Set([
@@ -123,16 +139,89 @@ export async function searchRoute(app: FastifyInstance) {
       useKeyword: true,
       useRerank: false, // rerank is a chat concern; skip for search speed
       skipRewrite: true, // search queries are short + explicit; skip the 2-5s LLM rewrite
+      // Try the dense (semantic) lane but cap it at 5s. If Gemini hangs or
+      // errors, retrieval transparently falls back to keyword-only so the
+      // search bar always responds quickly. Chat/voice use the full hybrid
+      // without the cap because they can afford the latency.
+      embedTimeoutMs: 5000,
     })
 
     const courses = new Map<number, CourseHit>()
     const modules = new Map<number, ModuleHit>()
     const videos = new Map<number, VideoHit>()
+    const library = new Map<number, LibraryHit>()
 
-    // Chunks → derive course / module / video hits from sourceId patterns.
+    // Chunks → derive course / module / video / library hits from sourceId patterns.
     for (const c of retrieval.chunks) {
       const cid = c.courseId
       const src = c.sourceId ?? c.id
+      // Reading-library chunks are cross-course and intentionally have a NULL
+      // courseId. Handle them BEFORE the courseId guard that filters out
+      // course/module/video chunks missing a scope.
+      //
+      // Catalogue entries (one chunk per book, summarising title + category +
+      // topics) match searches like "governance" or "books about kitchen" even
+      // when no page body contains the keyword verbatim.
+      const mBookCatalog = /^book:([a-f0-9-]+):catalog$/i.exec(src)
+      if (mBookCatalog && c.sourceKind === 'library') {
+        const bookId = mBookCatalog[1]!
+        const meta = (c.sourceMetadata ?? {}) as {
+          bookTitle?: string
+          category?: string
+          subcategory?: string
+          readerUrl?: string
+        }
+        const virtualId = Math.abs(hashString(`${bookId}:catalog`))
+        if (!library.has(virtualId)) {
+          library.set(virtualId, {
+            id: virtualId,
+            bookId,
+            bookTitle: meta.bookTitle ?? c.sourceTitle,
+            apiPage: 0,
+            totalPages: 1,
+            category: meta.category,
+            subcategory: meta.subcategory,
+            url: meta.readerUrl ?? `/reading-library/${bookId}`,
+            snippet: (c.text ?? '').slice(0, 140),
+            isCatalog: true,
+          })
+        }
+        continue
+      }
+      const mBook = /^book:([a-f0-9-]+):page:(\d+)$/i.exec(src)
+      if (mBook && c.sourceKind === 'library') {
+        const bookId = mBook[1]!
+        const apiPage = Number(mBook[2])
+        const meta = (c.sourceMetadata ?? {}) as {
+          bookTitle?: string
+          authorName?: string
+          category?: string
+          subcategory?: string
+          totalPages?: number
+          readerUrl?: string
+        }
+        const key = `${bookId}:${apiPage}`
+        const virtualId = Math.abs(hashString(key))
+        if (!library.has(virtualId)) {
+          const baseUrl = meta.readerUrl ?? `/reading-library/${bookId}?page=${apiPage}`
+          // Append the user's query so the reader can scroll to and highlight
+          // the matching text on the destination page. Reader is tolerant of
+          // the extra param when no match is found.
+          const url = `${baseUrl}${baseUrl.includes('?') ? '&' : '?'}q=${encodeURIComponent(body.query)}`
+          library.set(virtualId, {
+            id: virtualId,
+            bookId,
+            bookTitle: meta.bookTitle ?? c.sourceTitle,
+            apiPage,
+            totalPages: meta.totalPages ?? 1,
+            category: meta.category,
+            subcategory: meta.subcategory,
+            url,
+            snippet: (c.text ?? '').slice(0, 140),
+          })
+        }
+        continue
+      }
       if (cid == null) continue
       // `course:${id}` ingest source
       const mCourse = /^course:(\d+)$/.exec(src)
@@ -183,7 +272,9 @@ export async function searchRoute(app: FastifyInstance) {
             startSec: 0,
           })
         }
+        continue
       }
+      // (reading-library case handled above the courseId guard — see top of loop)
     }
 
     // Video cues also count as video hits — richer snippets from the actual
@@ -210,6 +301,7 @@ export async function searchRoute(app: FastifyInstance) {
     const coursesArr = [...courses.values()].slice(0, limit)
     const modulesArr = [...modules.values()].slice(0, limit)
     const videosArr = [...videos.values()].slice(0, limit)
+    const libraryArr = [...library.values()].slice(0, limit)
 
     // Relevance signal: RRF alone is non-discriminative (always ~0.016 for
     // top-1 in one lane). Instead check if any meaningful word from the query
@@ -228,6 +320,7 @@ export async function searchRoute(app: FastifyInstance) {
       ...coursesArr.map((c) => c.title),
       ...modulesArr.map((m) => `${m.title} ${m.courseTitle ?? ''}`),
       ...videosArr.map((v) => `${v.title} ${v.courseTitle ?? ''} ${v.moduleTitle ?? ''}`),
+      ...libraryArr.map((b) => `${b.bookTitle} ${b.category ?? ''} ${b.subcategory ?? ''}`),
     ]
       .join(' ')
       .toLowerCase()
@@ -235,7 +328,7 @@ export async function searchRoute(app: FastifyInstance) {
     // to "library returned anything" as the relevance signal.
     const hasStrong =
       queryWords.length === 0
-        ? coursesArr.length + modulesArr.length + videosArr.length > 0
+        ? coursesArr.length + modulesArr.length + videosArr.length + libraryArr.length > 0
         : queryWords.some((w) => haystack.includes(w))
     req.log.info(
       { queryWords, hasStrong, haystackLen: haystack.length },
@@ -280,10 +373,25 @@ export async function searchRoute(app: FastifyInstance) {
         courses: coursesArr,
         modules: modulesArr,
         videos: videosArr,
+        library: libraryArr,
       },
       hasStrongMatches: hasStrong,
       aiAnswer,
       aiDeclined,
     })
   })
+}
+
+/** FNV-1a 32-bit hash, used to synthesize a stable integer id for library
+ *  book-page hits so they can share the modules[] Map (which is keyed by
+ *  integer). Real lms-service module ids are small positive integers; the
+ *  signed-int wraparound here puts synthetic ids far from that range so
+ *  collisions are vanishingly unlikely. */
+function hashString(s: string): number {
+  let h = 2166136261
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i)
+    h = Math.imul(h, 16777619)
+  }
+  return h | 0
 }

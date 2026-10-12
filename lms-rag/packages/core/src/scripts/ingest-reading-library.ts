@@ -31,9 +31,10 @@ import { ingestText } from '../ingest/pipeline.js'
 
 const LIBRARY_ORIGIN = process.env.READING_LIBRARY_ORIGIN ?? 'https://templeinfo.org'
 
-/** Reserved sentinel scope for cross-tenant / all-course library content. */
-export const LIBRARY_TENANT_ID = '00000000-0000-0000-0000-000000000000'
-export const LIBRARY_COURSE_ID = 0
+// Library content has no owning tenant/course. rag_sources + rag_chunks
+// store NULL for both when kind='library' (see migration 0004). Retrieval
+// still returns these chunks via its `OR kind='library'` branch, so no
+// scope sentinel is needed.
 
 const DEFAULT_PAGE_SIZE = 15
 const FETCH_TIMEOUT_MS = 30_000
@@ -44,6 +45,7 @@ interface CatalogueBook {
   authorName?: string
   category?: string
   subcategory?: string
+  description?: string
   isVisible?: boolean
   hasContent?: boolean
   sequenceNumber?: number
@@ -62,6 +64,7 @@ export interface LibraryIngestSummary {
   totalBooks: number
   booksProcessed: number
   booksSkipped: number
+  catalogIngested: number
   pagesIngested: number
   pagesSkipped: number
   chunksIngested: number
@@ -120,6 +123,7 @@ export async function runLibraryIngest(
     totalBooks: 0,
     booksProcessed: 0,
     booksSkipped: 0,
+    catalogIngested: 0,
     pagesIngested: 0,
     pagesSkipped: 0,
     chunksIngested: 0,
@@ -160,11 +164,86 @@ export async function runLibraryIngest(
   return summary
 }
 
+/**
+ * Build the catalogue chunk text — one chunk per book summarising title,
+ * author, category and a hint of topics. This is what gets matched when a
+ * learner searches by category ("governance", "kitchen") or asks the
+ * chatbot "suggest me books on governance". Deliberately short and
+ * keyword-dense so FTS catches category/subcategory terms even when no
+ * page body happens to use them literally.
+ */
+function buildCatalogText(book: CatalogueBook): string {
+  const lines: string[] = []
+  lines.push(`Book: ${book.bookTitle}`)
+  if (book.authorName) lines.push(`Author: ${book.authorName}`)
+  if (book.category) lines.push(`Category: ${book.category}`)
+  if (book.subcategory) lines.push(`Subcategory: ${book.subcategory}`)
+  lines.push('')
+  if (book.description && book.description.trim()) {
+    lines.push(book.description.trim())
+    lines.push('')
+  }
+  // Flattened topic hint — makes keyword queries like "books on governance"
+  // or "books about kitchen" match even when the body doesn't use the word.
+  const topics = [book.category, book.subcategory, book.bookTitle]
+    .filter((v): v is string => typeof v === 'string' && v.length > 0)
+    .join(', ')
+  if (topics) lines.push(`Topics covered: ${topics}.`)
+  lines.push(
+    'This is a catalogue entry in the Reading Library. Readers can open the full book from the reader.',
+  )
+  return lines.join('\n')
+}
+
+async function ingestCatalogChunk(
+  book: CatalogueBook,
+  opts: LibraryIngestOptions,
+  summary: LibraryIngestSummary,
+): Promise<void> {
+  const sourceId = `book:${book.bookId}:catalog`
+  const title = `${book.bookTitle} — Catalogue Entry`
+  const text = buildCatalogText(book)
+  const readerUrl = `/reading-library/${book.bookId}`
+  try {
+    const result = await ingestText(
+      { sourceId, courseId: null, title, text },
+      {
+        dryRun: opts.dryRun,
+        tenantId: undefined,
+        kind: 'library',
+        metadata: {
+          bookId: book.bookId,
+          bookTitle: book.bookTitle,
+          authorName: book.authorName ?? '',
+          category: book.category ?? '',
+          subcategory: book.subcategory ?? '',
+          isCatalog: true,
+          readerUrl,
+        },
+      },
+    )
+    if (result.ingested) {
+      summary.catalogIngested++
+      summary.chunksIngested += result.chunkCount
+    }
+  } catch (err) {
+    summary.errors.push({
+      bookId: book.bookId,
+      title: book.bookTitle,
+      error: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+    })
+  }
+}
+
 async function ingestBook(
   book: CatalogueBook,
   opts: LibraryIngestOptions,
   summary: LibraryIngestSummary,
 ): Promise<number> {
+  // Catalogue chunk first — cheap and makes category/catalog queries work
+  // even when per-page content doesn't contain the matching keyword.
+  await ingestCatalogChunk(book, opts, summary)
+
   let page = 1
   let totalPages = Infinity
   let pagesIngestedForBook = 0
@@ -193,10 +272,14 @@ async function ingestBook(
 
     try {
       const result = await ingestText(
-        { sourceId, courseId: LIBRARY_COURSE_ID, title, text },
+        // Library content is cross-tenant/cross-course — pipeline accepts
+        // null and writes NULL into rag_sources + rag_chunks (see migration
+        // 0004_library_sources.sql). Retrieval still returns these chunks
+        // via its `OR kind='library'` branch.
+        { sourceId, courseId: null, title, text },
         {
           dryRun: opts.dryRun,
-          tenantId: LIBRARY_TENANT_ID,
+          tenantId: undefined, // NULL tenantId for library
           kind: 'library',
           metadata: {
             bookId: book.bookId,

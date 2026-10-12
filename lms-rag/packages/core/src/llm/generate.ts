@@ -42,6 +42,8 @@ STYLE RULES (strict):
 - Write natural prose. DO NOT put "(id: k1, chunkId: ...)" or any raw context labels inside the answer text. Citations belong ONLY in the "citations" JSON field, never inside "answer".
 - Use plain formatting — short sentences, bullet points if helpful, no markdown code fences, no long section headers.
 - Answer ONLY from the supplied context. If the context lacks the answer, say so briefly and set confidence to "low".
+- When an excerpt's header is a Reading Library book page (sourceTitle contains "— Page N/M" and no "(video ...)" tag), you MAY name the book inline in prose (e.g. "According to the Strategy & Planning handbook, …"). Do NOT emit a citation entry for library pages — only video and course/module chunks go in the citations field.
+- When excerpts include Reading Library catalogue entries (sourceTitle ends with "— Catalogue Entry" and the chunk body starts with "Book:" / "Author:" / "Category:" lines), treat them as a book catalogue the user can browse. For questions like "suggest books on <topic>" or "what books do you have about <X>", list each relevant book by title grouped by category (e.g. "In Governance: Strategy & Planning, Analytics & Intelligence. In Core Processes → Temple: Deity Worship, Visitor Experience.") and invite the learner to open any one in the Reading Library. Still no citation entry for library content.
 
 JSON FIELDS:
 - "answer": the clean user-facing text (no chunk IDs inline).

@@ -23,10 +23,15 @@ async function build() {
   })
 
   // CORS is handled by the Express app in lms-service, which proxies /rag/*
-  // to this internal-only port — this process is never reached directly
-  // from a browser, so it doesn't need to set its own CORS headers (and
-  // shouldn't, to avoid duplicate Access-Control-Allow-Origin headers).
-  await app.register(cors, { origin: false, credentials: true })
+  // to this internal-only port — in production this process is never reached
+  // directly from a browser, so it doesn't need to set its own CORS headers
+  // (and shouldn't, to avoid duplicate Access-Control-Allow-Origin headers).
+  //
+  // In local dev the learner app at localhost:3006 fetches this port
+  // directly (NEXT_PUBLIC_RAG_API_URL defaults to http://127.0.0.1:3000),
+  // so open CORS up when NODE_ENV !== 'production'.
+  const corsOrigin = process.env.NODE_ENV === 'production' ? false : true
+  await app.register(cors, { origin: corsOrigin, credentials: true })
 
   registerAdminAuth(app)
   registerLearnerAuth(app)
