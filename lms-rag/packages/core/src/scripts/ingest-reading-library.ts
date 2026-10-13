@@ -25,6 +25,7 @@
  *   pnpm --filter @ai-guru/core exec tsx src/scripts/ingest-reading-library.ts --dry-run
  *   pnpm --filter @ai-guru/core exec tsx src/scripts/ingest-reading-library.ts --book ad8b52df-1efb-4ed6-bd2a-18ede1348f39
  */
+import { createHash } from 'node:crypto'
 import { rawSql } from '../db/client.js'
 import { htmlToStructuredText } from '../ingest/html-text.js'
 import { ingestText } from '../ingest/pipeline.js'
@@ -62,12 +63,19 @@ interface PageResponse {
 
 export interface LibraryIngestSummary {
   totalBooks: number
+  /** Books whose metadata is already in sync with the DB — not re-fetched. */
+  booksUnchanged: number
+  /** Books whose metadata differed from the DB — new or edited upstream. */
+  booksChanged: number
   booksProcessed: number
   booksSkipped: number
   catalogIngested: number
   pagesIngested: number
   pagesSkipped: number
   chunksIngested: number
+  /** Set when the catalogue JSON hash matched the last-seen in-memory hash
+   *  so we exited before touching the DB or fetching any book pages. */
+  catalogueUnchanged: boolean
   errors: Array<{ bookId: string; title?: string; page?: number; error: string }>
 }
 
@@ -75,20 +83,85 @@ export interface LibraryIngestOptions {
   dryRun?: boolean
   /** Only ingest these bookIds (useful for CI / targeted re-ingest). */
   bookFilter?: string[] | null
+  /** Bypass the catalogue-hash + metadata-diff short-circuits and run a full
+   *  ingest for every eligible book. Used by the manual CLI and by the slower
+   *  "safety-net" cron that catches content-only changes the fast-tick cron
+   *  cannot detect from catalogue metadata alone. */
+  force?: boolean
+}
+
+/** In-memory cache of the last catalogue response hash. Lost on process
+ *  restart (acceptable — next tick does a full DB diff and repopulates). */
+let lastCatalogueHash: string | undefined
+
+/** Hash of the metadata fields we care about for change detection.
+ *  Any difference between upstream and DB on these fields means the book
+ *  needs re-ingesting (new book, retitled, recategorised, visibility
+ *  toggled, hasContent flipped, etc.). */
+function bookMetaFingerprint(book: {
+  bookTitle?: string
+  authorName?: string
+  category?: string
+  subcategory?: string
+  description?: string
+  isVisible?: boolean
+  hasContent?: boolean
+}): string {
+  return [
+    book.bookTitle ?? '',
+    book.authorName ?? '',
+    book.category ?? '',
+    book.subcategory ?? '',
+    book.description ?? '',
+    String(book.isVisible ?? ''),
+    String(book.hasContent ?? ''),
+  ].join('')
+}
+
+interface ExistingLibraryBook {
+  bookId: string
+  metadata: {
+    bookTitle?: string
+    authorName?: string
+    category?: string
+    subcategory?: string
+    description?: string
+    isVisible?: boolean
+    hasContent?: boolean
+  }
+}
+
+/** Snapshot each book's current catalog-chunk metadata from the DB so we can
+ *  diff against the upstream catalogue. One query, no per-book round-trips. */
+async function loadExistingLibraryMetadata(): Promise<Map<string, ExistingLibraryBook['metadata']>> {
+  const sql = rawSql()
+  const rows = (await sql`
+    SELECT metadata->>'bookId' AS "bookId", metadata AS metadata
+      FROM rag_sources
+     WHERE kind = 'library'
+       AND id LIKE '%:catalog'
+  `) as unknown as Array<{ bookId: string; metadata: ExistingLibraryBook['metadata'] }>
+  const map = new Map<string, ExistingLibraryBook['metadata']>()
+  for (const row of rows) {
+    if (row.bookId) map.set(row.bookId, row.metadata ?? {})
+  }
+  return map
 }
 
 interface CliArgs {
   dryRun: boolean
   bookFilter: string[] | null
+  force: boolean
 }
 
 function parseArgs(): CliArgs {
   const args = process.argv.slice(2)
-  const out: CliArgs = { dryRun: false, bookFilter: null }
+  const out: CliArgs = { dryRun: false, bookFilter: null, force: false }
   const books: string[] = []
   for (let i = 0; i < args.length; i++) {
     const a = args[i]
     if (a === '--dry-run') out.dryRun = true
+    else if (a === '--force') out.force = true
     else if (a === '--book' && args[i + 1]) {
       books.push(args[i + 1]!)
       i++
@@ -111,28 +184,51 @@ async function fetchJson<T>(url: string): Promise<T | null> {
 }
 
 /**
- * Run the library ingest once. Each book's pages are iterated via the
- * upstream's own pagination (pageSize=15) — on first run we hit every page,
- * on subsequent runs the content-hash dedup inside ingestText no-ops the
- * ones that haven't changed.
+ * Run the library ingest once. Two short-circuits keep the fast (2-min)
+ * cron cheap:
+ *   1. Hash the catalogue JSON — if it matches the last-seen hash we exit
+ *      without touching the DB or fetching any book pages. Covers the 99%
+ *      case where nothing changed upstream between ticks.
+ *   2. If the catalogue DID change, snapshot the DB's current library-book
+ *      metadata in one query and diff per book. Only books that are new
+ *      upstream (not in DB) or whose metadata fingerprint drifted
+ *      (title / category / author / isVisible / hasContent / description)
+ *      get their pages re-fetched. The content-hash dedup inside ingestText
+ *      makes unchanged pages free even on re-ingest.
+ *
+ * Both short-circuits are bypassed by `opts.force = true` (CLI --force) or
+ * when `opts.bookFilter` is set (manual targeted re-ingest).
  */
 export async function runLibraryIngest(
   opts: LibraryIngestOptions = {},
 ): Promise<LibraryIngestSummary> {
   const summary: LibraryIngestSummary = {
     totalBooks: 0,
+    booksUnchanged: 0,
+    booksChanged: 0,
     booksProcessed: 0,
     booksSkipped: 0,
     catalogIngested: 0,
     pagesIngested: 0,
     pagesSkipped: 0,
     chunksIngested: 0,
+    catalogueUnchanged: false,
     errors: [],
   }
 
   const catalogue = await fetchJson<CatalogueBook[]>(`${LIBRARY_ORIGIN}/api/books`)
   if (!Array.isArray(catalogue)) {
     throw new Error('Reading library catalogue response was not an array')
+  }
+
+  // Short-circuit 1: upstream catalogue identical to last tick's response.
+  const catalogueHash = createHash('sha256')
+    .update(JSON.stringify(catalogue))
+    .digest('hex')
+  const skipCatalogueCheck = opts.force === true || opts.bookFilter != null
+  if (!skipCatalogueCheck && lastCatalogueHash === catalogueHash) {
+    summary.catalogueUnchanged = true
+    return summary
   }
 
   const filterSet = opts.bookFilter ? new Set(opts.bookFilter) : null
@@ -146,7 +242,23 @@ export async function runLibraryIngest(
 
   summary.totalBooks = eligible.length
 
+  // Short-circuit 2: snapshot DB metadata once, diff per book.
+  // In --force or targeted-filter mode we process every eligible book
+  // regardless of the diff.
+  const existingMeta = skipCatalogueCheck
+    ? new Map<string, ExistingLibraryBook['metadata']>()
+    : await loadExistingLibraryMetadata()
+
   for (const book of eligible) {
+    const prev = existingMeta.get(book.bookId)
+    const changed =
+      !prev ||
+      bookMetaFingerprint(prev) !== bookMetaFingerprint(book)
+    if (!skipCatalogueCheck && !changed) {
+      summary.booksUnchanged++
+      continue
+    }
+    summary.booksChanged++
     try {
       const pagesIngested = await ingestBook(book, opts, summary)
       if (pagesIngested > 0) summary.booksProcessed++
@@ -159,6 +271,15 @@ export async function runLibraryIngest(
         error: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
       })
     }
+  }
+
+  // Only remember the catalogue hash when:
+  //   - we did a full/unfiltered run (--book filter is a one-off, mustn't poison), AND
+  //   - no books errored out (if any did, the next tick must do the full diff
+  //     so the failed books get retried — otherwise the hash short-circuit
+  //     would skip them forever).
+  if (!opts.bookFilter && summary.errors.length === 0) {
+    lastCatalogueHash = catalogueHash
   }
 
   return summary
@@ -211,6 +332,10 @@ async function ingestCatalogChunk(
         dryRun: opts.dryRun,
         tenantId: undefined,
         kind: 'library',
+        // Cap the embed call so a Gemini socket stall can't lock the cron.
+        // On timeout, caller catches EMBED_TIMEOUT, logs, continues to next
+        // book. Next cron tick retries (content-hash dedup makes it free).
+        embedTimeoutMs: 30_000,
         metadata: {
           bookId: book.bookId,
           bookTitle: book.bookTitle,
@@ -281,6 +406,11 @@ async function ingestBook(
           dryRun: opts.dryRun,
           tenantId: undefined, // NULL tenantId for library
           kind: 'library',
+          // Cap the embed call so one stalled Gemini socket doesn't lock
+          // the whole cron tick. On timeout, caller catches EMBED_TIMEOUT,
+          // skips this page, and continues to the next page / book. Next
+          // tick retries from where we left off (content-hash dedup).
+          embedTimeoutMs: 30_000,
           metadata: {
             bookId: book.bookId,
             bookTitle: book.bookTitle,
@@ -323,6 +453,7 @@ async function main(): Promise<void> {
     const summary = await runLibraryIngest({
       dryRun: args.dryRun,
       bookFilter: args.bookFilter,
+      force: args.force,
     })
     console.log(
       JSON.stringify({

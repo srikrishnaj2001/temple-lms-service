@@ -74,17 +74,26 @@ export function startIngestCron(log: FastifyBaseLogger): void {
 /**
  * In-process reading-library auto-ingest scheduler.
  *
- * Pulls the public catalogue from templeinfo.org (74 books ≈ 15 MB total)
- * and upserts them into the RAG index so AI Guru and search can ground on
- * book content. Content-hash dedup makes unchanged pages free on re-run;
- * the first full pass costs ~$0.20 in embed credits.
+ * Pulls the public catalogue from templeinfo.org (74 books) and upserts new
+ * or metadata-changed books into the RAG index so AI Guru and search can
+ * ground on book content.
  *
- * Hourly by default — editorial pace is slow (books don't change every
- * minute) and the catalogue fetch is 74+ HTTP round trips. Tunable via
- * LIBRARY_INGEST_CRON_SCHEDULE. Disable with LIBRARY_INGEST_CRON_DISABLED=1.
+ * Every 2 minutes by default. runLibraryIngest short-circuits in two stages:
+ *   1. SHA256 of the catalogue JSON matches the last-seen in-memory hash
+ *      → exit after 1 HTTP call (common case, ~99% of ticks).
+ *   2. Catalogue hash differs → one DB query snapshots current library
+ *      metadata, then only books with a changed metadata fingerprint
+ *      (title / category / author / isVisible / hasContent / description)
+ *      or brand-new bookIds get their pages re-fetched + re-embedded.
  *
- * Advisory-lock keyed independently from the LMS content cron, so a slow
- * library tick never blocks the per-minute LMS cron (and vice versa).
+ * Net effect: new or edited books are searchable within ~2 min of publish,
+ * at ~1 HTTP call every 2 min on the quiet path (negligible load on
+ * templeinfo.org).
+ *
+ * Tunable via LIBRARY_INGEST_CRON_SCHEDULE. Disable with
+ * LIBRARY_INGEST_CRON_DISABLED=1. Advisory-lock keyed independently from
+ * the LMS content cron so a slow library tick never blocks the per-minute
+ * LMS cron (and vice versa).
  */
 export function startLibraryIngestCron(log: FastifyBaseLogger): void {
   if (process.env.LIBRARY_INGEST_CRON_DISABLED === '1') {
@@ -95,7 +104,9 @@ export function startLibraryIngestCron(log: FastifyBaseLogger): void {
     return
   }
 
-  const schedule = process.env.LIBRARY_INGEST_CRON_SCHEDULE ?? '0 * * * *' // top of every hour
+  // Every 2 minutes — catches new books and metadata edits within one tick.
+  // The hash + metadata-diff short-circuits make the quiet path cheap.
+  const schedule = process.env.LIBRARY_INGEST_CRON_SCHEDULE ?? '*/2 * * * *'
 
   nodeCron.schedule(schedule, async () => {
     try {
@@ -115,7 +126,10 @@ export function startLibraryIngestCron(log: FastifyBaseLogger): void {
         return
       }
       const s = result.summary!
-      const didWork = s.pagesIngested > 0
+      // Only chat-log the tick when it actually did DB work. The quiet
+      // path (catalogue hash unchanged OR all books metadata-identical)
+      // drops to debug so the per-2-min cadence doesn't flood prod logs.
+      const didWork = s.pagesIngested > 0 || s.catalogIngested > 0
       if (didWork) {
         log.info(
           {
@@ -123,6 +137,9 @@ export function startLibraryIngestCron(log: FastifyBaseLogger): void {
             durationMs: result.durationMs,
             totalBooks: s.totalBooks,
             booksProcessed: s.booksProcessed,
+            booksChanged: s.booksChanged,
+            booksUnchanged: s.booksUnchanged,
+            catalogIngested: s.catalogIngested,
             pagesIngested: s.pagesIngested,
             chunksIngested: s.chunksIngested,
             errors: s.errors.length,

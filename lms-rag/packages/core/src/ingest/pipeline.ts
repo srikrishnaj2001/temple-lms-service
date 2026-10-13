@@ -28,6 +28,13 @@ export interface IngestOptions {
   /** Opaque metadata stored on rag_sources.metadata (jsonb). Used by callers that
    *  need to persist extra context (e.g. bookTitle, pageNumber for library books). */
   metadata?: Record<string, unknown>
+  /** Hard cap (ms) on the Gemini embed call for this document. On timeout,
+   *  ingestDocument throws an Error with code='EMBED_TIMEOUT' so the caller
+   *  can skip the item and retry on the next cron tick. 0 = disabled (prod
+   *  default outside library ingest). The reading-library cron sets 30s so
+   *  one stuck Gemini socket (dev-plan HTTP/2 reuse bug) can't lock up the
+   *  cron forever. */
+  embedTimeoutMs?: number
 }
 
 export interface IngestResult {
@@ -119,10 +126,30 @@ export async function ingestDocument(
   }
 
   const docChunks = chunkDocument(doc)
-  const embeddings = await embed(
+  // Protect against Gemini embed stalls (intermittent HTTP/2 socket reuse
+  // bug on long-running dev plans). If embedTimeoutMs is set and the embed
+  // doesn't resolve in time, throw a well-identified error so callers can
+  // skip this item and retry on the next cron tick.
+  const embedPromise = embed(
     docChunks.map((c) => c.text),
     { taskType: 'RETRIEVAL_DOCUMENT' },
   )
+  let embeddings: number[][]
+  if (opts.embedTimeoutMs && opts.embedTimeoutMs > 0) {
+    const timeoutMs = opts.embedTimeoutMs
+    embeddings = await Promise.race<number[][]>([
+      embedPromise,
+      new Promise<number[][]>((_, reject) => {
+        setTimeout(() => {
+          const err = new Error(`embed timeout after ${timeoutMs}ms`) as Error & { code?: string }
+          err.code = 'EMBED_TIMEOUT'
+          reject(err)
+        }, timeoutMs)
+      }),
+    ])
+  } else {
+    embeddings = await embedPromise
+  }
 
   if (opts.dryRun) return { ingested: true, chunkCount: docChunks.length }
 
