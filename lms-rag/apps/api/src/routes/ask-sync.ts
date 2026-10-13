@@ -99,6 +99,11 @@ export async function askSyncRoute(app: FastifyInstance) {
         tenantId: identity.tenantId,
         courseIds: effectiveCourseIds.length > 0 ? effectiveCourseIds : undefined,
         history: body.history,
+        // Voice tool-call needs a hard deadline — if the Gemini embed stalls
+        // (intermittent HTTP/2 socket issue on dev plans), fall back to
+        // keyword-only retrieval so the agent still answers within budget.
+        // 8s = ~5s embed grace + ~3s LLM headroom.
+        embedTimeoutMs: 8000,
       } as never)
 
       // 2. Build context (same shape as /ask streaming path)
