@@ -10,11 +10,20 @@ module.exports = (sequelize, DataTypes) => {
       primaryKey: true,
       autoIncrement: true,
     },
+    // Scope: exactly one of (contentId, courseId) is set (enforced by the
+    // quizzes_scope_chk CHECK constraint in migration 0005). Lesson-wise
+    // quizzes have contentId; the final course assessment has courseId.
     contentId: {
       type: DataTypes.INTEGER,
       field: 'content_id',
-      allowNull: false,
+      allowNull: true,
       references: { model: 'contents', key: 'id' },
+    },
+    courseId: {
+      type: DataTypes.INTEGER,
+      field: 'course_id',
+      allowNull: true,
+      references: { model: 'courses', key: 'id' },
     },
     title: {
       type: DataTypes.STRING,

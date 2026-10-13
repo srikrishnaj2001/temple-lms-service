@@ -1,5 +1,5 @@
 const axios = require('axios');
-const { Content } = require('../../models');
+const { Content, Course, Module } = require('../../models');
 const { getGumletAsset } = require('../utils/gumlet-assets');
 const summaryService = require('./summaryService');
 
@@ -295,6 +295,197 @@ Return ONLY a JSON array. No prose, no code fences, no commentary. Shape:
     // Trim to expected count if the model over-generated.
     return questions.slice(0, expectedCount);
   }
+
+  // ===========================================================================
+  // Course-level (final assessment) methods
+  // ===========================================================================
+
+  /**
+   * Fetch all lessons under a course in natural reading order (module seq
+   * number, then content seq number). Used by the course-level eligibility
+   * check and context builder. Attaches each Content's polymorphic payload
+   * via the standard Content.getContentData() hook.
+   */
+  async loadCourseLessons(courseId) {
+    const course = await Course.findByPk(courseId, {
+      include: [{
+        model: Module,
+        as: 'modules',
+        include: [{ model: Content, as: 'contents' }],
+      }],
+      order: [
+        [{ model: Module, as: 'modules' }, 'sequenceNumber', 'ASC'],
+        [{ model: Module, as: 'modules' }, { model: Content, as: 'contents' }, 'sequenceNumber', 'ASC'],
+      ],
+    });
+    if (!course) return null;
+    const lessons = [];
+    for (const mod of course.modules || []) {
+      for (const content of mod.contents || []) {
+        lessons.push({ module: mod, content });
+      }
+    }
+    return { course, lessons };
+  }
+
+  /**
+   * Decide whether a course has enough aggregated content to generate a
+   * final assessment. Any course with at least one lesson that passes the
+   * per-lesson eligibility check qualifies — the admin decides how useful
+   * a one- or two-lesson "final" actually is.
+   */
+  async checkCourseEligibility(courseId) {
+    const loaded = await this.loadCourseLessons(courseId);
+    if (!loaded) return { eligible: false, reason: 'Course not found' };
+    if (loaded.lessons.length === 0) {
+      return { eligible: false, reason: 'Course has no lessons yet' };
+    }
+
+    let eligibleCount = 0;
+    for (const { content } of loaded.lessons) {
+      const r = await this.checkEligibility(content.id);
+      if (r.eligible) eligibleCount++;
+    }
+    if (eligibleCount === 0) {
+      return {
+        eligible: false,
+        reason: 'No lesson in this course has enough content to source questions from yet.',
+      };
+    }
+    return { eligible: true, eligibleLessons: eligibleCount, totalLessons: loaded.lessons.length };
+  }
+
+  /**
+   * Aggregate text across every lesson in the course. Each lesson's per-lesson
+   * context (summary + description + a trimmed excerpt of transcript / body /
+   * extracted PDF text) is appended under a "## Module → Lesson" heading so
+   * the LLM has structural signposts and can distribute questions across the
+   * course rather than clustering on whichever lesson happens to be richest.
+   *
+   * Per-lesson excerpt is capped more tightly than the lesson-wise builder
+   * (perLessonCap) so a 20-lesson course fits comfortably inside Gemini's
+   * budget. Global cap (courseContextCap) is a last-resort guardrail.
+   */
+  async buildCourseContext(courseId) {
+    const perLessonCap = 2500;    // chars of raw per-lesson excerpt
+    const courseContextCap = 120_000; // ~30k tokens — well under Gemini 2.5 Flash 1M
+    const loaded = await this.loadCourseLessons(courseId);
+    if (!loaded) throw new Error('Course not found');
+
+    const parts = [];
+    parts.push(`COURSE TITLE: ${loaded.course.title}`);
+    if (loaded.course.description) parts.push(`COURSE OVERVIEW:\n${loaded.course.description}`);
+
+    for (const { module, content } of loaded.lessons) {
+      // Reuse the per-lesson builder — it already handles Gumlet transcript
+      // fetch, PDF extracted-text, article body, etc. We just trim its output
+      // so the course context stays manageable across many lessons.
+      let lessonCtx;
+      try {
+        lessonCtx = await this.buildContext(content.id);
+      } catch {
+        continue; // Skip lessons that fail to load (missing payload etc.).
+      }
+      if (!lessonCtx?.context) continue;
+      const trimmed = lessonCtx.context.length > perLessonCap
+        ? lessonCtx.context.slice(0, perLessonCap) + '\n...[truncated]'
+        : lessonCtx.context;
+      parts.push(`\n## Module: ${module.title} → Lesson: ${lessonCtx.title}\n${trimmed}`);
+      // Stop early if the aggregate is huge — remaining lessons would be
+      // dropped anyway by any hard LLM-input limit.
+      if (parts.join('\n\n').length >= courseContextCap) {
+        parts.push('\n[Remaining lessons omitted from context — course content exceeds aggregate cap]');
+        break;
+      }
+    }
+
+    return {
+      context: parts.join('\n\n').slice(0, courseContextCap),
+      title: loaded.course.title,
+      lessonCount: loaded.lessons.length,
+    };
+  }
+
+  buildCoursePrompt(context, courseTitle, questionCount, difficulty) {
+    const difficultyDescription = {
+      EASY: 'surface-level recall across the course material.',
+      MEDIUM: 'applied understanding; questions require reasoning across one or two lessons.',
+      HARD: 'synthesis questions requiring the learner to connect ideas from multiple lessons.',
+      MIXED: `a balanced mix — roughly ${Math.ceil(questionCount * 0.3)} easy recall, ${Math.ceil(questionCount * 0.5)} applied, ${Math.floor(questionCount * 0.2)} synthesis across lessons.`,
+    }[difficulty] || 'a balanced mix.';
+
+    return `You are generating a FINAL COURSE ASSESSMENT for a Hindu temple training LMS. The learners have just completed every lesson in the course "${courseTitle}" and are now being tested on the full material.
+
+COURSE CONTEXT (every lesson, in reading order):
+${context}
+
+TASK:
+Generate exactly ${questionCount} multiple-choice questions covering the WHOLE course, not just one lesson. Distribute questions across modules so the assessment reflects the full scope of what the learner studied. Difficulty: ${difficultyDescription}
+
+STRICT RULES:
+- Each question has 4 options, exactly 1 correct.
+- Pull wrong answers from plausible misconceptions, not nonsense.
+- Avoid "All of the above" / "None of the above".
+- Avoid trick wording — test knowledge, not reading comprehension.
+- Every question must be answerable from the course context above. Do NOT introduce outside facts.
+- Spread question coverage across at least ${Math.min(5, Math.max(2, Math.floor(questionCount / 3)))} different lessons/modules — this is a FINAL assessment, not a lesson quiz.
+- Explanation (1-2 sentences) justifies WHY the correct answer is correct.
+- All text in English. Keep questions concise (under 30 words). Keep options concise (under 15 words).
+
+RESPONSE FORMAT:
+Return ONLY a JSON array. No prose, no code fences, no commentary. Shape:
+
+[
+  {
+    "prompt": "Which of these is a core responsibility of the Executive Officer?",
+    "options": [
+      { "text": "Approving guest-house bookings", "isCorrect": false },
+      { "text": "Overseeing all departmental KPIs", "isCorrect": true },
+      { "text": "Cooking prasadam", "isCorrect": false },
+      { "text": "Managing the website", "isCorrect": false }
+    ],
+    "explanation": "Per the Strategy & Planning module, the Executive Officer coordinates and reviews departmental KPIs across the organisation."
+  }
+]`;
+  }
+
+  /**
+   * Generate a draft final assessment for an entire course. Returns the parsed
+   * quiz (not persisted) — route layer handles DB writes.
+   */
+  async generateCourseDraft({ courseId, questionCount = 15, difficulty = 'MIXED' }) {
+    const eligibility = await this.checkCourseEligibility(courseId);
+    if (!eligibility.eligible) {
+      const err = new Error(eligibility.reason);
+      err.code = 'INELIGIBLE';
+      throw err;
+    }
+
+    const { context, title } = await this.buildCourseContext(courseId);
+    const prompt = this.buildCoursePrompt(context, title, questionCount, difficulty);
+
+    // Larger token budget than lesson quizzes — a 25-question final with
+    // explanations easily blows past the lesson-quiz 4k default.
+    const raw = await this.makeApiCall(
+      [
+        { role: 'system', content: 'You generate course-wide final assessment questions in strict JSON. No commentary.' },
+        { role: 'user', content: prompt },
+      ],
+      8192,
+    );
+    const questions = this.parseResponse(raw, questionCount);
+
+    return {
+      title: `${title} — Final Assessment`,
+      questionCount: questions.length,
+      difficulty,
+      questions,
+    };
+  }
+
+  // ===========================================================================
+  // Lesson-level entry point (kept at the bottom for parity with course-level).
+  // ===========================================================================
 
   /**
    * Main entry point. Generate a draft quiz for a lesson.
