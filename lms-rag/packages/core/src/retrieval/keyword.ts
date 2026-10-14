@@ -63,8 +63,8 @@ export async function keywordSearchChunks(
       FROM rag_chunks c
       JOIN rag_sources s ON s.id = c."sourceId"
      WHERE c.text_search @@ websearch_to_tsquery('english', ${query})
-       ${tenantScoped ? sql`AND (c."tenantId" = ${tenantId}::uuid OR c."tenantId" IS NULL)` : sql``}
-       ${scoped ? sql`AND (c."courseId" = ANY(${courseIds as number[]}::int[]) OR c."courseId" IS NULL)` : sql``}
+       ${tenantScoped ? sql`AND (c."tenantId" = ${tenantId}::uuid OR (s.kind = 'library' AND c."tenantId" IS NULL))` : sql``}
+       ${scoped ? sql`AND (c."courseId" = ANY(${courseIds as number[]}::int[]) OR (s.kind = 'library' AND c."courseId" IS NULL))` : sql``}
      ORDER BY score DESC
      LIMIT ${limit}
   `

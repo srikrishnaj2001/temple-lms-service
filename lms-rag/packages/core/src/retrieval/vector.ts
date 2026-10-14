@@ -75,8 +75,8 @@ export async function vectorSearchChunks(
       LEFT JOIN courses co ON co.id = c."courseId"
       LEFT JOIN modules m  ON m.id = c."moduleId"
      WHERE c.embedding IS NOT NULL
-       ${tenantScoped ? sql`AND (c."tenantId" = ${tenantId}::uuid OR c."tenantId" IS NULL)` : sql``}
-       ${scoped ? sql`AND (c."courseId" = ANY(${courseIds as number[]}::int[]) OR c."courseId" IS NULL)` : sql``}
+       ${tenantScoped ? sql`AND (c."tenantId" = ${tenantId}::uuid OR (s.kind = 'library' AND c."tenantId" IS NULL))` : sql``}
+       ${scoped ? sql`AND (c."courseId" = ANY(${courseIds as number[]}::int[]) OR (s.kind = 'library' AND c."courseId" IS NULL))` : sql``}
      ORDER BY c.embedding <=> ${literal}::vector
      LIMIT ${limit}
   `

@@ -11,8 +11,8 @@
  * Writes to rag_sources + rag_chunks with:
  *   sourceId    = `book:<bookId>:page:<apiPage>`
  *   kind        = 'library'
- *   tenantId    = LIBRARY_TENANT_ID  (all-zero UUID, retrieval-scoped specially)
- *   courseId    = 0                   (sentinel; not a valid auto-increment id)
+ *   tenantId    = NULL (public library)
+ *   courseId    = NULL (cross-course)
  *   title       = `<bookTitle> — Page <N>/<total>`
  *   metadata    = { bookId, bookTitle, authorName, category, subcategory,
  *                   apiPage, totalPages, readerUrl }
@@ -93,60 +93,8 @@ export interface LibraryIngestOptions {
 /** In-memory cache of the last catalogue response hash. Lost on process
  *  restart (acceptable — next tick does a full DB diff and repopulates). */
 let lastCatalogueHash: string | undefined
-
-/** Hash of the metadata fields we care about for change detection.
- *  Any difference between upstream and DB on these fields means the book
- *  needs re-ingesting (new book, retitled, recategorised, visibility
- *  toggled, hasContent flipped, etc.). */
-function bookMetaFingerprint(book: {
-  bookTitle?: string
-  authorName?: string
-  category?: string
-  subcategory?: string
-  description?: string
-  isVisible?: boolean
-  hasContent?: boolean
-}): string {
-  return [
-    book.bookTitle ?? '',
-    book.authorName ?? '',
-    book.category ?? '',
-    book.subcategory ?? '',
-    book.description ?? '',
-    String(book.isVisible ?? ''),
-    String(book.hasContent ?? ''),
-  ].join('')
-}
-
-interface ExistingLibraryBook {
-  bookId: string
-  metadata: {
-    bookTitle?: string
-    authorName?: string
-    category?: string
-    subcategory?: string
-    description?: string
-    isVisible?: boolean
-    hasContent?: boolean
-  }
-}
-
-/** Snapshot each book's current catalog-chunk metadata from the DB so we can
- *  diff against the upstream catalogue. One query, no per-book round-trips. */
-async function loadExistingLibraryMetadata(): Promise<Map<string, ExistingLibraryBook['metadata']>> {
-  const sql = rawSql()
-  const rows = (await sql`
-    SELECT metadata->>'bookId' AS "bookId", metadata AS metadata
-      FROM rag_sources
-     WHERE kind = 'library'
-       AND id LIKE '%:catalog'
-  `) as unknown as Array<{ bookId: string; metadata: ExistingLibraryBook['metadata'] }>
-  const map = new Map<string, ExistingLibraryBook['metadata']>()
-  for (const row of rows) {
-    if (row.bookId) map.set(row.bookId, row.metadata ?? {})
-  }
-  return map
-}
+let lastFullIngestAt = 0
+const FULL_REFRESH_MS = 6 * 60 * 60 * 1000
 
 interface CliArgs {
   dryRun: boolean
@@ -184,20 +132,9 @@ async function fetchJson<T>(url: string): Promise<T | null> {
 }
 
 /**
- * Run the library ingest once. Two short-circuits keep the fast (2-min)
- * cron cheap:
- *   1. Hash the catalogue JSON — if it matches the last-seen hash we exit
- *      without touching the DB or fetching any book pages. Covers the 99%
- *      case where nothing changed upstream between ticks.
- *   2. If the catalogue DID change, snapshot the DB's current library-book
- *      metadata in one query and diff per book. Only books that are new
- *      upstream (not in DB) or whose metadata fingerprint drifted
- *      (title / category / author / isVisible / hasContent / description)
- *      get their pages re-fetched. The content-hash dedup inside ingestText
- *      makes unchanged pages free even on re-ingest.
- *
- * Both short-circuits are bypassed by `opts.force = true` (CLI --force) or
- * when `opts.bookFilter` is set (manual targeted re-ingest).
+ * Index readable, visible books. Unchanged catalogues are skipped for up to
+ * six hours; the periodic full refresh catches content-only edits. Failed
+ * runs retry next tick, with unchanged page embeddings reused.
  */
 export async function runLibraryIngest(
   opts: LibraryIngestOptions = {},
@@ -226,7 +163,7 @@ export async function runLibraryIngest(
     .update(JSON.stringify(catalogue))
     .digest('hex')
   const skipCatalogueCheck = opts.force === true || opts.bookFilter != null
-  if (!skipCatalogueCheck && lastCatalogueHash === catalogueHash) {
+  if (!skipCatalogueCheck && lastCatalogueHash === catalogueHash && Date.now() - lastFullIngestAt < FULL_REFRESH_MS) {
     summary.catalogueUnchanged = true
     return summary
   }
@@ -242,22 +179,9 @@ export async function runLibraryIngest(
 
   summary.totalBooks = eligible.length
 
-  // Short-circuit 2: snapshot DB metadata once, diff per book.
-  // In --force or targeted-filter mode we process every eligible book
-  // regardless of the diff.
-  const existingMeta = skipCatalogueCheck
-    ? new Map<string, ExistingLibraryBook['metadata']>()
-    : await loadExistingLibraryMetadata()
-
+  // Catalogue metadata cannot prove page bodies are unchanged, nor that a
+  // previous run finished every page. ingestText deduplicates embeddings.
   for (const book of eligible) {
-    const prev = existingMeta.get(book.bookId)
-    const changed =
-      !prev ||
-      bookMetaFingerprint(prev) !== bookMetaFingerprint(book)
-    if (!skipCatalogueCheck && !changed) {
-      summary.booksUnchanged++
-      continue
-    }
     summary.booksChanged++
     try {
       const pagesIngested = await ingestBook(book, opts, summary)
@@ -278,7 +202,14 @@ export async function runLibraryIngest(
   //   - no books errored out (if any did, the next tick must do the full diff
   //     so the failed books get retried — otherwise the hash short-circuit
   //     would skip them forever).
-  if (!opts.bookFilter && summary.errors.length === 0) {
+  if (!opts.dryRun && !opts.bookFilter && summary.errors.length === 0) {
+    // Remove indexed books hidden, removed, or made unavailable upstream.
+    // This only touches our derived index; the upstream library is untouched.
+    const sql = rawSql()
+    const bookIds = eligible.map(book => book.bookId)
+    await sql`DELETE FROM rag_sources WHERE kind = 'library'
+      AND NOT (COALESCE(metadata->>'bookId', '') = ANY(${bookIds}::text[]))`
+    lastFullIngestAt = Date.now()
     lastCatalogueHash = catalogueHash
   }
 
