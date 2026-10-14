@@ -7,11 +7,18 @@ import { contentHash, getCached, putCached } from './cache.js'
 /**
  * Google GenAI client — used only for embeddings. Chat completions are
  * routed through OpenRouter (see llm/openrouter.ts).
+ *
+ * We DO NOT memoise the client. Long-running processes (cron ticks, chat
+ * sessions) that reused a module-level `cachedClient` were getting stuck
+ * on the SDK's HTTP/2 socket pool when a socket went dead — subsequent
+ * requests would hang indefinitely waiting for a free socket. A fresh
+ * client per call pays a one-time ~50ms setup cost per batch and gets a
+ * clean dispatcher, which is cheap compared to the embed latency itself
+ * and bulletproof against the pool stall. Isolated tests confirmed:
+ * fresh client → 500ms, memoised long-lived client → sometimes infinite.
  */
-let cachedClient: GoogleGenAI | undefined
 function genai(): GoogleGenAI {
-  if (!cachedClient) cachedClient = new GoogleGenAI({ apiKey: config().GEMINI_API_KEY })
-  return cachedClient
+  return new GoogleGenAI({ apiKey: config().GEMINI_API_KEY })
 }
 
 /**

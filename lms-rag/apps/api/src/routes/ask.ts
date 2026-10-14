@@ -168,7 +168,16 @@ export async function askRoute(app: FastifyInstance) {
       // progress rather than a spinner.
       sendEvent(reply, 'stage', { stage: 'retrieving', label: 'Searching the library…' })
       // 1. retrieve
-      const retrieval = await hybridRetrieve(session.query, session.options as never)
+      //    embedTimeoutMs = 10s. If the Gemini embed stalls (intermittent
+      //    HTTP/2 socket issue on dev plans), hybridRetrieve silently drops
+      //    the dense lane and returns keyword-only results so the SSE stream
+      //    still emits a token response instead of hanging indefinitely.
+      //    Looser than /ask-sync because the SSE channel can show the user
+      //    a "still working…" stage event while we wait.
+      const retrieval = await hybridRetrieve(session.query, {
+        ...(session.options as object),
+        embedTimeoutMs: 10000,
+      } as never)
       // Build retrieval payload once so we can both emit and cache it verbatim.
       const retrievalEvent = {
         rewritten: retrieval.rewritten,

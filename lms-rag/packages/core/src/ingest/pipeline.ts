@@ -28,6 +28,13 @@ export interface IngestOptions {
   /** Opaque metadata stored on rag_sources.metadata (jsonb). Used by callers that
    *  need to persist extra context (e.g. bookTitle, pageNumber for library books). */
   metadata?: Record<string, unknown>
+  /** Hard cap (ms) on the Gemini embed call for this document. On timeout,
+   *  ingestDocument throws an Error with code='EMBED_TIMEOUT' so the caller
+   *  can skip the item and retry on the next cron tick. 0 = disabled (prod
+   *  default outside library ingest). The reading-library cron sets 30s so
+   *  one stuck Gemini socket (dev-plan HTTP/2 reuse bug) can't lock up the
+   *  cron forever. */
+  embedTimeoutMs?: number
 }
 
 export interface IngestResult {
@@ -84,15 +91,19 @@ export async function ingestDocument(
   opts: IngestOptions = {},
 ): Promise<{ ingested: boolean; chunkCount: number }> {
   const hash = createHash('sha256').update(doc.text).digest('hex')
-  if (opts.courseId == null) {
+  const kind = opts.kind ?? 'document'
+  // courseId is required for every kind except 'library' — library content is
+  // cross-course and lives on rag_sources with courseId=NULL.
+  if (kind !== 'library' && opts.courseId == null) {
     throw new Error('ingestDocument: courseId is required (integer, from lms-service courses.id)')
   }
-  const courseId = opts.courseId
+  const courseId = opts.courseId ?? null
   const moduleId = opts.moduleId ?? null
   const contentId = opts.contentId ?? null
   const videoId = opts.videoId ?? null
-  const tenantId = opts.tenantId ?? DEV_TENANT_ID
-  const kind = opts.kind ?? 'document'
+  // Library content has no owning tenant — pass NULL rather than DEV_TENANT_ID
+  // so retrieval's `s.kind = 'library'` branch is the only path that returns it.
+  const tenantId = kind === 'library' ? (opts.tenantId ?? null) : (opts.tenantId ?? DEV_TENANT_ID)
   const metadata = opts.metadata ?? {}
 
   if (!opts.dryRun) {
@@ -115,10 +126,30 @@ export async function ingestDocument(
   }
 
   const docChunks = chunkDocument(doc)
-  const embeddings = await embed(
+  // Protect against Gemini embed stalls (intermittent HTTP/2 socket reuse
+  // bug on long-running dev plans). If embedTimeoutMs is set and the embed
+  // doesn't resolve in time, throw a well-identified error so callers can
+  // skip this item and retry on the next cron tick.
+  const embedPromise = embed(
     docChunks.map((c) => c.text),
     { taskType: 'RETRIEVAL_DOCUMENT' },
   )
+  let embeddings: number[][]
+  if (opts.embedTimeoutMs && opts.embedTimeoutMs > 0) {
+    const timeoutMs = opts.embedTimeoutMs
+    embeddings = await Promise.race<number[][]>([
+      embedPromise,
+      new Promise<number[][]>((_, reject) => {
+        setTimeout(() => {
+          const err = new Error(`embed timeout after ${timeoutMs}ms`) as Error & { code?: string }
+          err.code = 'EMBED_TIMEOUT'
+          reject(err)
+        }, timeoutMs)
+      }),
+    ])
+  } else {
+    embeddings = await embedPromise
+  }
 
   if (opts.dryRun) return { ingested: true, chunkCount: docChunks.length }
 
@@ -253,7 +284,9 @@ export function hashText(t: string): string {
 export interface TextIngestInput {
   /** stable id — use `${moduleId}:${contentId}:body` for one text body per content */
   sourceId: string
-  courseId: number
+  /** Required for 'document' and 'video' kinds (every LMS asset lives in a
+   *  course). NULL for 'library' content which is cross-tenant/cross-course. */
+  courseId: number | null
   moduleId?: number
   contentId?: number
   title: string
@@ -274,7 +307,8 @@ export async function ingestText(input: TextIngestInput, opts: IngestOptions = {
     { id: input.sourceId, title: input.title, text: input.text },
     {
       ...opts,
-      courseId: input.courseId,
+      // input.courseId can be null for library content; pipeline accepts null.
+      courseId: input.courseId ?? undefined,
       moduleId: input.moduleId,
       contentId: input.contentId,
     },

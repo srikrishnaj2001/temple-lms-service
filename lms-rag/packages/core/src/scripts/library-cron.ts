@@ -28,25 +28,21 @@ export async function runLibraryIngestWithLock(): Promise<LibraryCronResult> {
   const sql = rawSql()
   const startedAt = Date.now()
 
-  const lockRows = (await sql`
-    SELECT pg_try_advisory_lock(${LIBRARY_CRON_LOCK_KEY}) AS acquired
-  `) as unknown as Array<{ acquired: boolean }>
-  const acquired = lockRows[0]?.acquired ?? false
-
-  if (!acquired) {
-    return { status: 'skipped', durationMs: Date.now() - startedAt }
-  }
-
+  // Transaction locks stay on one connection, even behind a transaction pooler.
   try {
-    const summary = await runLibraryIngest({ dryRun: false, bookFilter: null })
-    return { status: 'ok', durationMs: Date.now() - startedAt, summary }
+    return await sql.begin(async (tx) => {
+      const rows = await tx`SELECT pg_try_advisory_xact_lock(${LIBRARY_CRON_LOCK_KEY}) AS acquired`
+      if (!rows[0]?.acquired) {
+        return { status: 'skipped' as const, durationMs: Date.now() - startedAt }
+      }
+      const summary = await runLibraryIngest({ dryRun: false, bookFilter: null })
+      return { status: 'ok' as const, durationMs: Date.now() - startedAt, summary }
+    })
   } catch (err) {
     return {
       status: 'error',
       durationMs: Date.now() - startedAt,
       error: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
     }
-  } finally {
-    await sql`SELECT pg_advisory_unlock(${LIBRARY_CRON_LOCK_KEY})`
   }
 }

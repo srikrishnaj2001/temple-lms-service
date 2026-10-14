@@ -17,6 +17,12 @@ export interface FusedChunk {
   id: string
   sourceId: string
   sourceTitle: string
+  /** rag_sources.kind. 'library' chunks are reading-library pages — the
+   *  /search route uses this to format a reader URL from sourceMetadata. */
+  sourceKind?: string
+  /** rag_sources.metadata (jsonb). For 'library' chunks:
+   *  { bookId, bookTitle, authorName, category, apiPage, totalPages, readerUrl } */
+  sourceMetadata?: Record<string, unknown>
   headingTrail: string[]
   text: string
   rrfScore: number
@@ -93,6 +99,20 @@ export interface HybridRetrievalOptions {
    * specific enough not to need reference resolution. Saves 2-5s per call.
    */
   skipRewrite?: boolean
+  /**
+   * Skip the dense (Gemini-embedded) lane entirely. Falls back to keyword
+   * (Postgres FTS) only. Used by the search bar when we want to guarantee a
+   * fast response and don't need semantic matching — Gemini can be slow or
+   * rate-limited on dev plans and we'd rather return "no results" than hang.
+   */
+  skipDense?: boolean
+  /**
+   * Soft timeout (ms) for the HyDE embed call. 0 = no timeout (prod default).
+   * When set, if the embed exceeds the timeout, the dense lane is silently
+   * dropped and retrieval returns keyword-only results. Used by the search
+   * bar so a stuck Gemini call never leaves the UI spinning.
+   */
+  embedTimeoutMs?: number
 }
 
 /**
@@ -116,6 +136,8 @@ export async function hybridRetrieve(
   const finalK = opts.finalK ?? 6
   const useKeyword = opts.useKeyword ?? true
   const useRerank = opts.useRerank ?? true
+  const skipDense = opts.skipDense ?? false
+  const embedTimeoutMs = opts.embedTimeoutMs ?? 0 // 0 = no timeout (prod default)
 
   const { rewritten, hyde } = opts.skipRewrite
     ? { rewritten: query, hyde: query }
@@ -123,18 +145,46 @@ export async function hybridRetrieve(
 
   // HyDE embedding is what dense lane uses — a plausible hypothetical answer
   // pulls the right region of the space even when the raw question is thin.
-  const [queryVec] = await Promise.all([embedOne(hyde, 'RETRIEVAL_QUERY')])
+  // When skipDense is set we never embed, so the lane returns empty.
+  // When embedTimeoutMs > 0 and embed exceeds it, we transparently fall back
+  // to keyword-only — the search bar uses this so a slow/stuck Gemini call
+  // never leaves the UI spinning for 90+ seconds.
+  let queryVec: number[] = []
+  let denseAvailable = !skipDense
+  if (!skipDense) {
+    try {
+      queryVec = embedTimeoutMs > 0
+        ? await Promise.race([
+            embedOne(hyde, 'RETRIEVAL_QUERY'),
+            new Promise<number[]>((_, reject) =>
+              setTimeout(() => reject(new Error('embed timeout')), embedTimeoutMs),
+            ),
+          ])
+        : await embedOne(hyde, 'RETRIEVAL_QUERY')
+    } catch (err) {
+      denseAvailable = false
+      console.warn(
+        'hybridRetrieve: dense lane disabled, falling back to keyword-only.',
+        err instanceof Error ? err.message : err,
+      )
+    }
+  }
 
   // Run all four retrieval queries concurrently — text + video, dense + keyword.
   // Two small searches on the two separately-indexed tables (chunks, video_cues)
   // beat one large scan; issuing them together means the round-trip is bounded
-  // by the slowest of the four, not the sum.
+  // by the slowest of the four, not the sum. Dense lanes are skipped when
+  // skipDense is set OR when the embed call failed/timed-out above.
   const [denseChunks, kwChunks, denseCues, kwCues] = await Promise.all([
-    vectorSearchChunks(queryVec, perLaneK, opts.courseIds, opts.tenantId),
+    denseAvailable
+      ? vectorSearchChunks(queryVec, perLaneK, opts.courseIds, opts.tenantId)
+      : Promise.resolve([] as VectorHit[]),
     useKeyword
       ? keywordSearchChunks(rewritten, perLaneK, opts.courseIds, opts.tenantId)
       : Promise.resolve([] as KeywordHit[]),
-    vectorSearchVideoCues(queryVec, perLaneK, opts.courseIds, opts.tenantId),
+    denseAvailable
+      ? vectorSearchVideoCues(queryVec, perLaneK, opts.courseIds, opts.tenantId)
+      : Promise.resolve([] as VideoCueHit[]),
     useKeyword
       ? keywordSearchVideoCues(rewritten, perLaneK, opts.courseIds, opts.tenantId)
       : Promise.resolve([] as KeywordHit[]),
@@ -230,6 +280,8 @@ function rrfChunks(dense: VectorHit[], keyword: KeywordHit[], limit: number): Fu
       id: d.id,
       sourceId: d.sourceId,
       sourceTitle: d.sourceTitle,
+      sourceKind: d.sourceKind,
+      sourceMetadata: d.sourceMetadata,
       headingTrail: d.headingTrail,
       text: d.text,
       rrfScore: 1 / (RRF_K + rank),
@@ -246,11 +298,17 @@ function rrfChunks(dense: VectorHit[], keyword: KeywordHit[], limit: number): Fu
     if (existing) {
       existing.rrfScore += 1 / (RRF_K + rank)
       existing.keywordRank = rank
+      // Keep sourceKind + metadata from the dense hit, but backfill from
+      // keyword if the dense row didn't carry them.
+      if (!existing.sourceKind && k.sourceKind) existing.sourceKind = k.sourceKind
+      if (!existing.sourceMetadata && k.sourceMetadata) existing.sourceMetadata = k.sourceMetadata
     } else {
       combined.set(k.id, {
         id: k.id,
         sourceId: k.sourceId ?? '',
         sourceTitle: k.sourceTitle ?? '',
+        sourceKind: k.sourceKind,
+        sourceMetadata: k.sourceMetadata,
         headingTrail: k.headingTrail ?? [],
         text: k.text,
         rrfScore: 1 / (RRF_K + rank),

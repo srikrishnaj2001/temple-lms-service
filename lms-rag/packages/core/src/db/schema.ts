@@ -42,8 +42,13 @@ export const ragSources = pgTable(
   'rag_sources',
   {
     id: text('id').primaryKey(),
-    tenantId: uuid('tenantId').notNull(),
-    courseId: integer('courseId').notNull(),
+    // tenantId + courseId are set for 'document' and 'video' kinds (every
+    // LMS asset lives inside a tenant+course). For 'library' kind (public
+    // reading-library books fetched from templeinfo.org) they are NULL —
+    // library content is cross-tenant/cross-course and retrieval admits
+    // it via an explicit OR kind='library' branch.
+    tenantId: uuid('tenantId'),
+    courseId: integer('courseId'),
     moduleId: integer('moduleId'),
     contentId: integer('contentId'),
     videoId: integer('videoId'),
@@ -69,11 +74,12 @@ export const ragChunks = pgTable(
   'rag_chunks',
   {
     id: text('id').primaryKey(), // e.g. `${sourceId}#${ordinal}`
-    tenantId: uuid('tenantId').notNull(),
+    // Nullable for 'library' chunks (see ragSources comment above).
+    tenantId: uuid('tenantId'),
     sourceId: text('sourceId')
       .notNull()
       .references(() => ragSources.id, { onDelete: 'cascade' }),
-    courseId: integer('courseId').notNull(),
+    courseId: integer('courseId'),
     moduleId: integer('moduleId'),
     ordinal: integer('ordinal').notNull(),
     headingTrail: jsonb('headingTrail').$type<string[]>().default(sql`'[]'::jsonb`),
