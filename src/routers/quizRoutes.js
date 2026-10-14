@@ -1,6 +1,7 @@
 const express = require('express');
 const { QueryTypes } = require('sequelize');
 const quizService = require('../services/quizService');
+const { isCompleteQuizSubmission } = require('../services/quizSubmission');
 const { checkUserEmail } = require('../middlewares/authMiddleware');
 const {
   User,
@@ -525,6 +526,11 @@ learnerQuizRouter.post('/quizzes/:quizId/attempts', checkUserEmail, async (req, 
       return res.status(403).json(NOT_ENROLLED);
     }
 
+    if (quiz.courseId != null && !isCompleteQuizSubmission(quiz.questions, answers)) {
+      await t.rollback();
+      return res.status(400).json({ success: false, error: 'Answer every question before submitting the final assessment' });
+    }
+
     let correctCount = 0;
     const perQuestion = [];
     for (const q of (quiz.questions || [])) {
@@ -611,7 +617,14 @@ learnerQuizRouter.get('/courses/:courseId/quiz-content-ids', checkUserEmail, asy
     const courseFinal = await Quiz.findOne({
       where: { courseId, isPublished: true },
       attributes: ['id', 'title', 'passingScore'],
+      include: [{ model: QuizQuestion, as: 'questions', attributes: ['id'],
+        include: [{ model: QuizOption, as: 'options', attributes: ['id'] }] }],
     });
+    const finalAttempt = courseFinal ? await QuizAttempt.findOne({
+      where: { quizId: courseFinal.id, userId },
+      attributes: ['answers'],
+      order: [['completedAt', 'DESC'], ['id', 'DESC']],
+    }) : null;
     res.json({
       success: true,
       data: {
@@ -621,6 +634,7 @@ learnerQuizRouter.get('/courses/:courseId/quiz-content-ids', checkUserEmail, asy
           quizId: courseFinal.id,
           title: courseFinal.title,
           passingScore: courseFinal.passingScore,
+          submitted: Boolean(finalAttempt && isCompleteQuizSubmission(courseFinal.questions, finalAttempt.answers)),
         } : null,
       },
     });
