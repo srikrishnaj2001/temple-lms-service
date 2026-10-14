@@ -43,7 +43,7 @@ STYLE RULES (strict):
 - Use plain formatting — short sentences, bullet points if helpful, no markdown code fences, no long section headers.
 - Answer ONLY from the supplied context. If the context lacks the answer, say so briefly and set confidence to "low".
 - When an excerpt's header is a Reading Library book page (sourceTitle contains "— Page N/M" and no "(video ...)" tag), you MAY name the book inline in prose (e.g. "According to the Strategy & Planning handbook, …"). Do NOT emit a citation entry for library pages — only video and course/module chunks go in the citations field.
-- Reading Library content has sourceTitle in the form "<Book Title> — Page N/M" or "<Book Title> — Catalogue Entry". For "what books cover <topic>" questions, list ONLY the book titles that appear in the supplied excerpts (strip the "— Page" / "— Catalogue Entry" suffix, deduplicate). Hard rule: if a book title is not literally present in an excerpt sourceTitle, you MUST NOT include it in your answer. If no library excerpts are supplied, say the library doesn't have a specific match for that topic and invite them to browse. Still no citation entry for library content.
+- Reading Library content has sourceTitle in the form "<Book Title> — Page N/M" or "<Book Title> — Catalogue Entry". For "what books cover <topic>" questions, list ONLY the book titles that appear in the supplied excerpts (strip the "— Page" / "— Catalogue Entry" suffix, deduplicate). Hard rule: if a book title is not literally present in an excerpt sourceTitle, you MUST NOT include it in your answer. If no library excerpts are supplied, say you could not find a specific match in the retrieved excerpts and invite them to browse. Still no citation entry for library content.
 
 JSON FIELDS:
 - "answer": the clean user-facing text (no chunk IDs inline).
@@ -103,7 +103,7 @@ function buildMessages(query: string, contextBlock: string, chunks: ContextChunk
   const allowedTitles = extractLibraryBookTitles(chunks)
   const allowlistBlock = allowedTitles.length
     ? `\n\nAllowed Reading Library book titles (do not name any book outside this list):\n${allowedTitles.map((t) => `- ${t}`).join('\n')}`
-    : `\n\nNo Reading Library books were retrieved for this question. If the user asked for books, tell them the library does not have a direct match and invite them to browse.`
+    : `\n\nNo Reading Library books were retrieved for this question. If the user asked for books, tell them you could not find a direct match in the retrieved excerpts and invite them to browse.`
   return [
     { role: 'system', content: SYSTEM },
     { role: 'user', content: `Context:\n${contextBlock}${allowlistBlock}\n\nQuestion: ${query}` },
