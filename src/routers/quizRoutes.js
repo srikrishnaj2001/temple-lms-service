@@ -172,6 +172,138 @@ adminQuizRouter.delete('/quizzes/:id', async (req, res) => {
   }
 });
 
+// =============================================================================
+// Course-scoped admin routes (final assessment per course)
+// =============================================================================
+
+// GET /api/courses/:courseId/quiz/eligibility
+// Returns { eligible, reason?, eligibleLessons?, totalLessons? } so the admin
+// UI can decide whether to show the "Generate Final Assessment" button.
+adminQuizRouter.get('/courses/:courseId/quiz/eligibility', async (req, res) => {
+  try {
+    const result = await quizService.checkCourseEligibility(Number(req.params.courseId));
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/courses/:courseId/quiz/generate
+// Build the full-course LLM context + call Gemini. Returns a draft quiz
+// (not persisted). Admin reviews questions in the UI, then POSTs to save.
+adminQuizRouter.post('/courses/:courseId/quiz/generate', async (req, res) => {
+  try {
+    const courseId = Number(req.params.courseId);
+    const { questionCount = 15, difficulty = 'MIXED' } = req.body || {};
+    if (![10, 15, 20, 25].includes(questionCount)) {
+      return res.status(400).json({ success: false, error: 'questionCount must be one of 10, 15, 20, 25' });
+    }
+    if (!['EASY', 'MEDIUM', 'HARD', 'MIXED'].includes(difficulty)) {
+      return res.status(400).json({ success: false, error: 'Invalid difficulty' });
+    }
+    const draft = await quizService.generateCourseDraft({ courseId, questionCount, difficulty });
+    res.json({ success: true, data: draft });
+  } catch (err) {
+    const status = err.code === 'INELIGIBLE' ? 400 : 500;
+    res.status(status).json({ success: false, error: err.message, code: err.code });
+  }
+});
+
+// POST /api/courses/:courseId/quiz — save (or replace) the final assessment.
+// Same payload shape as the lesson-scoped endpoint. The DB CHECK constraint
+// (quizzes_scope_chk) enforces that only one of content_id / course_id is set.
+adminQuizRouter.post('/courses/:courseId/quiz', async (req, res) => {
+  const courseId = Number(req.params.courseId);
+  const t = await sequelize.transaction();
+  try {
+    const payload = req.body || {};
+    if (!Array.isArray(payload.questions) || payload.questions.length === 0) {
+      await t.rollback();
+      return res.status(400).json({ success: false, error: 'questions[] required' });
+    }
+
+    // Soft-delete the existing final (unique partial index enforces at most one
+    // active per course). The paranoid delete keeps a historical trail.
+    await Quiz.destroy({ where: { courseId }, transaction: t });
+
+    const quiz = await Quiz.create({
+      courseId,
+      contentId: null,
+      title: payload.title || 'Final Assessment',
+      description: payload.description || null,
+      questionCount: payload.questions.length,
+      difficulty: payload.difficulty || 'MIXED',
+      passingScore: payload.passingScore ?? 70,
+      requirePassToAdvance: payload.requirePassToAdvance ?? false,
+      showExplanations: payload.showExplanations ?? true,
+      isPublished: payload.isPublished ?? false,
+    }, { transaction: t });
+
+    for (let i = 0; i < payload.questions.length; i++) {
+      const q = payload.questions[i];
+      const question = await QuizQuestion.create({
+        quizId: quiz.id,
+        prompt: q.prompt,
+        explanation: q.explanation || null,
+        sequenceNumber: i + 1,
+      }, { transaction: t });
+
+      if (!Array.isArray(q.options) || q.options.length < 2) {
+        throw new Error(`Question ${i + 1} must have at least 2 options`);
+      }
+      for (let j = 0; j < q.options.length; j++) {
+        const opt = q.options[j];
+        await QuizOption.create({
+          questionId: question.id,
+          text: opt.text,
+          isCorrect: !!opt.isCorrect,
+          sequenceNumber: j + 1,
+        }, { transaction: t });
+      }
+    }
+
+    await t.commit();
+
+    const saved = await Quiz.findByPk(quiz.id, {
+      include: [{
+        model: QuizQuestion,
+        as: 'questions',
+        include: [{ model: QuizOption, as: 'options' }],
+      }],
+      order: [
+        [{ model: QuizQuestion, as: 'questions' }, 'sequenceNumber', 'ASC'],
+        [{ model: QuizQuestion, as: 'questions' }, { model: QuizOption, as: 'options' }, 'sequenceNumber', 'ASC'],
+      ],
+    });
+    res.status(201).json({ success: true, data: saved });
+  } catch (err) {
+    await t.rollback();
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// GET /api/courses/:courseId/quiz — admin fetches with correct answers visible.
+adminQuizRouter.get('/courses/:courseId/quiz', async (req, res) => {
+  try {
+    const courseId = Number(req.params.courseId);
+    const quiz = await Quiz.findOne({
+      where: { courseId },
+      include: [{
+        model: QuizQuestion,
+        as: 'questions',
+        include: [{ model: QuizOption, as: 'options' }],
+      }],
+      order: [
+        [{ model: QuizQuestion, as: 'questions' }, 'sequenceNumber', 'ASC'],
+        [{ model: QuizQuestion, as: 'questions' }, { model: QuizOption, as: 'options' }, 'sequenceNumber', 'ASC'],
+      ],
+    });
+    res.json({ success: true, data: quiz || null });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // GET /api/quizzes — list ALL assessments across the LMS, with lesson /
 // module / course context. Used by the admin's Assessments management page.
 // Supports simple pagination; filter is intentionally minimal — the admin
@@ -183,30 +315,50 @@ adminQuizRouter.get('/quizzes', async (req, res) => {
     const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 100));
     const offset = (page - 1) * limit;
 
+    // Pull BOTH lesson-scoped and course-scoped quizzes. We can't make either
+    // include `required: true` any more (course quizzes have no Content;
+    // lesson quizzes have no direct Course); using LEFT JOINs on both lets
+    // Sequelize populate whichever branch is set per row.
     const { rows, count } = await Quiz.findAndCountAll({
-      attributes: ['id', 'contentId', 'title', 'questionCount', 'difficulty',
-                   'passingScore', 'isPublished', 'createdAt', 'updatedAt'],
-      include: [{
-        model: Content,
-        as: 'content',
-        required: true,
-        attributes: ['id', 'contentType', 'contentId'],
-        include: [{
-          model: Module,
-          as: 'module',
-          required: true,
-          attributes: ['id', 'title'],
+      attributes: ['id', 'contentId', 'courseId', 'title', 'questionCount',
+                   'difficulty', 'passingScore', 'isPublished',
+                   'createdAt', 'updatedAt'],
+      include: [
+        {
+          model: Content,
+          as: 'content',
+          required: false,
+          attributes: ['id', 'contentType', 'contentId'],
           include: [{
-            model: Course,
-            as: 'course',
-            required: true,
+            model: Module,
+            as: 'module',
+            required: false,
             attributes: ['id', 'title'],
+            include: [{
+              model: Course,
+              as: 'course',
+              required: false,
+              attributes: ['id', 'title'],
+            }],
           }],
-        }],
-      }],
+        },
+        {
+          model: Course,
+          as: 'course',
+          required: false,
+          attributes: ['id', 'title'],
+        },
+      ],
       order: [['updatedAt', 'DESC']],
       limit,
       offset,
+    });
+
+    // Add a derived `scope` field so the admin table can label each row.
+    const quizzes = rows.map((r) => {
+      const o = r.toJSON();
+      o.scope = o.courseId != null ? 'course' : 'lesson';
+      return o;
     });
 
     res.json({
@@ -215,7 +367,7 @@ adminQuizRouter.get('/quizzes', async (req, res) => {
         total: count,
         page,
         limit,
-        quizzes: rows,
+        quizzes,
       },
     });
   } catch (err) {
@@ -260,6 +412,18 @@ async function isEnrolledInCourse(userId, courseId) {
     LIMIT 1
   `, { replacements: { courseId, userId }, type: QueryTypes.SELECT });
   return Boolean(row);
+}
+
+/**
+ * Enrolment check for ANY quiz. Course-scoped quizzes (finals) resolve via
+ * their courseId; lesson-scoped quizzes resolve via contents -> modules
+ * -> courses. Returns false if the quiz has neither (shouldn't happen —
+ * the DB CHECK constraint rules that out).
+ */
+async function isEnrolledForQuiz(userId, quiz) {
+  if (quiz.courseId != null) return isEnrolledInCourse(userId, quiz.courseId);
+  if (quiz.contentId != null) return isEnrolledForContent(userId, quiz.contentId);
+  return false;
 }
 
 /** Same check, resolved through the lesson that owns the assessment. */
@@ -356,7 +520,7 @@ learnerQuizRouter.post('/quizzes/:quizId/attempts', checkUserEmail, async (req, 
       return res.status(404).json({ success: false, error: 'Quiz not found or not published' });
     }
 
-    if (!await isEnrolledForContent(userId, quiz.contentId)) {
+    if (!await isEnrolledForQuiz(userId, quiz)) {
       await t.rollback();
       return res.status(403).json(NOT_ENROLLED);
     }
@@ -425,7 +589,8 @@ learnerQuizRouter.get('/courses/:courseId/quiz-content-ids', checkUserEmail, asy
     }
 
     const { Content, Module } = require('../../models');
-    const rows = await Quiz.findAll({
+    // Lesson-scoped published quizzes under this course.
+    const lessonRows = await Quiz.findAll({
       where: { isPublished: true },
       include: [{
         model: Content,
@@ -442,13 +607,67 @@ learnerQuizRouter.get('/courses/:courseId/quiz-content-ids', checkUserEmail, asy
       }],
       attributes: ['id', 'contentId'],
     });
+    // Course-scoped final assessment (at most one — enforced by partial index).
+    const courseFinal = await Quiz.findOne({
+      where: { courseId, isPublished: true },
+      attributes: ['id', 'title', 'passingScore'],
+    });
     res.json({
       success: true,
       data: {
-        contentIds: rows.map((r) => r.contentId),
-        quizzes: rows.map((r) => ({ contentId: r.contentId, quizId: r.id })),
+        contentIds: lessonRows.map((r) => r.contentId),
+        quizzes: lessonRows.map((r) => ({ contentId: r.contentId, quizId: r.id })),
+        courseQuiz: courseFinal ? {
+          quizId: courseFinal.id,
+          title: courseFinal.title,
+          passingScore: courseFinal.passingScore,
+        } : null,
       },
     });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /v1/quizzes/:quizId
+// Fetch a published quiz by its id, with correct-answer flags stripped.
+// Used by the course-level final assessment runner where the learner starts
+// from a quizId (not a contentId). Enforces enrollment via the same
+// isEnrolledForQuiz check as the attempt endpoint.
+learnerQuizRouter.get('/quizzes/:quizId', checkUserEmail, async (req, res) => {
+  try {
+    const userId = await resolveUserId(req, res);
+    if (!userId) return;
+
+    const quiz = await Quiz.findOne({
+      where: { id: Number(req.params.quizId), isPublished: true },
+      include: [{
+        model: QuizQuestion,
+        as: 'questions',
+        include: [{ model: QuizOption, as: 'options' }],
+      }],
+      order: [
+        [{ model: QuizQuestion, as: 'questions' }, 'sequenceNumber', 'ASC'],
+        [{ model: QuizQuestion, as: 'questions' }, { model: QuizOption, as: 'options' }, 'sequenceNumber', 'ASC'],
+      ],
+    });
+    if (!quiz) return res.json({ success: true, data: null });
+    if (!await isEnrolledForQuiz(userId, quiz)) {
+      return res.status(403).json(NOT_ENROLLED);
+    }
+
+    const safe = quiz.toJSON();
+    safe.questions = (safe.questions || []).map(q => ({
+      id: q.id,
+      prompt: q.prompt,
+      sequenceNumber: q.sequenceNumber,
+      options: (q.options || []).map(o => ({
+        id: o.id,
+        text: o.text,
+        sequenceNumber: o.sequenceNumber,
+      })),
+    }));
+    res.json({ success: true, data: safe });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }

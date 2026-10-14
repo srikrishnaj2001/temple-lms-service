@@ -242,11 +242,19 @@ module.exports = (models) => {
   }
 
   // -------- Quiz feature --------
-  // Lesson-wise: one quiz per Content (lesson). Quiz has questions, each
-  // question has options. Attempts record learner submissions.
+  // Quizzes have two scopes (exactly one is set, enforced by DB CHECK):
+  //   - Lesson-wise: Content.hasOne(Quiz) via contentId.
+  //   - Course-wide final assessment: Course.hasOne(Quiz) via courseId.
+  // Quiz has questions, each question has options. Attempts record
+  // learner submissions (same table for both scopes — scoring is identical).
   if (Quiz && Content) {
     Content.hasOne(Quiz, { foreignKey: 'contentId', as: 'quiz', onDelete: 'CASCADE' });
     Quiz.belongsTo(Content, { foreignKey: 'contentId', as: 'content' });
+  }
+
+  if (Quiz && Course) {
+    Course.hasOne(Quiz, { foreignKey: 'courseId', as: 'finalQuiz', onDelete: 'CASCADE' });
+    Quiz.belongsTo(Course, { foreignKey: 'courseId', as: 'course' });
   }
 
   if (Quiz && QuizQuestion) {
