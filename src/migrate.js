@@ -49,7 +49,7 @@ function migrationFiles() {
 /**
  * Apply every migration that has not run yet.
  *
- * Holds a Postgres advisory lock for the duration so that two instances
+ * Holds a transaction-scoped Postgres advisory lock for the duration so that two instances
  * booting at the same time cannot run the same migration twice — the second
  * one blocks, then sees the first one's "SequelizeMeta" rows and no-ops.
  *
@@ -57,11 +57,14 @@ function migrationFiles() {
  * serve traffic against a half-migrated schema.
  */
 async function runMigrations() {
-  await sequelize.query('SELECT pg_advisory_lock(:key)', {
-    replacements: { key: ADVISORY_LOCK_KEY },
-  });
-
-  try {
+  // Keep the lock on one transaction/connection. A session lock acquired and
+  // released through independent pooled queries can leak or protect the wrong
+  // connection, especially behind Supabase's transaction pooler.
+  return sequelize.transaction(async (lockTransaction) => {
+    await sequelize.query('SELECT pg_advisory_xact_lock(:key)', {
+      replacements: { key: ADVISORY_LOCK_KEY },
+      transaction: lockTransaction,
+    });
     const done = await appliedMigrations();
     const pending = migrationFiles().filter((file) => !done.has(file));
 
@@ -87,11 +90,7 @@ async function runMigrations() {
     }
 
     return { applied: pending };
-  } finally {
-    await sequelize.query('SELECT pg_advisory_unlock(:key)', {
-      replacements: { key: ADVISORY_LOCK_KEY },
-    });
-  }
+  });
 }
 
 module.exports = { runMigrations };
