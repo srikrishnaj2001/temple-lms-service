@@ -48,7 +48,7 @@ export const ragSources = pgTable(
     contentId: integer('contentId'),
     videoId: integer('videoId'),
     title: text('title').notNull(),
-    kind: text('kind').notNull(), // 'document' | 'video'
+    kind: text('kind').notNull(), // 'document' | 'video' | 'library'
     uri: text('uri'),
     metadata: jsonb('metadata').default(sql`'{}'::jsonb`),
     contentHash: text('contentHash').notNull(),

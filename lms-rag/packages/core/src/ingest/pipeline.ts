@@ -22,6 +22,12 @@ export interface IngestOptions {
   videoId?: number
   /** Tenant this content belongs to (UUID). Defaults to DEV_TENANT_ID for dev/POC. */
   tenantId?: string
+  /** Source kind discriminator stored on rag_sources.kind. Defaults to 'document'.
+   *  'library' marks shared cross-tenant content (reading library books). */
+  kind?: string
+  /** Opaque metadata stored on rag_sources.metadata (jsonb). Used by callers that
+   *  need to persist extra context (e.g. bookTitle, pageNumber for library books). */
+  metadata?: Record<string, unknown>
 }
 
 export interface IngestResult {
@@ -86,6 +92,8 @@ export async function ingestDocument(
   const contentId = opts.contentId ?? null
   const videoId = opts.videoId ?? null
   const tenantId = opts.tenantId ?? DEV_TENANT_ID
+  const kind = opts.kind ?? 'document'
+  const metadata = opts.metadata ?? {}
 
   if (!opts.dryRun) {
     const existing = await db()
@@ -126,7 +134,8 @@ export async function ingestDocument(
         contentId,
         videoId,
         title: doc.title,
-        kind: 'document',
+        kind,
+        metadata,
         contentHash: hash,
       })
       .onConflictDoUpdate({
@@ -139,6 +148,8 @@ export async function ingestDocument(
           moduleId,
           contentId,
           videoId,
+          kind,
+          metadata,
         },
       })
     await tx.delete(chunksTable).where(sql`${chunksTable.sourceId} = ${doc.id}`)
@@ -251,8 +262,9 @@ export interface TextIngestInput {
 
 /**
  * Ingest a text body directly (no filesystem). Used by the admin API when
- * the LMS pushes module/content text. Any prior version of the same sourceId is
- * replaced (idempotent).
+ * the LMS pushes module/content text, and by the reading-library ingester
+ * (which passes kind='library' + metadata via opts). Any prior version of the
+ * same sourceId is replaced (idempotent via contentHash).
  */
 export async function ingestText(input: TextIngestInput, opts: IngestOptions = {}): Promise<{
   ingested: boolean
