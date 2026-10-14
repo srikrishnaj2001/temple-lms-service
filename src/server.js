@@ -8,7 +8,7 @@ const { startKeepAlive } = require('./keepAlive');
 const { runMigrations } = require('./migrate');
 
 const PORT = process.env.PORT || 8006;
-const WORKERS = process.env.WEB_CONCURRENCY || os.cpus().length;
+const WORKERS = process.env.WEB_CONCURRENCY || Math.min(2, os.cpus().length);
 
 /**
  * Bring the schema up to date before this deploy serves any traffic.

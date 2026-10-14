@@ -42,8 +42,9 @@ module.exports = {
     dialect: 'postgres',
     logging: false,
     pool: {
-      max: 100,        // Maximum connections in pool
-      min: 10,         // Minimum connections in pool
+      // Express workers and the RAG process share Supabase's 15-session limit.
+      max: 3,
+      min: 0,
       acquire: 60000,  // Maximum time to get connection (ms)
       idle: 30000,     // Maximum idle time before releasing (ms)
       evict: 1000,     // How often to check for idle connections (ms)

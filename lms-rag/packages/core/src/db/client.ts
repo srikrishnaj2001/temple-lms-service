@@ -9,7 +9,8 @@ let cachedSql: ReturnType<typeof postgres> | undefined
 export function db() {
   if (!cached) {
     cachedSql = postgres(config().DATABASE_URL, {
-      max: 10,
+      // Leave room for Express workers in the shared Supabase session pool.
+      max: 3,
       idle_timeout: 30,
       prepare: false, // pgvector-with-drizzle friendliness
     })
