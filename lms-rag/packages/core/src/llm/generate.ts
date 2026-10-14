@@ -43,7 +43,7 @@ STYLE RULES (strict):
 - Use plain formatting — short sentences, bullet points if helpful, no markdown code fences, no long section headers.
 - Answer ONLY from the supplied context. If the context lacks the answer, say so briefly and set confidence to "low".
 - When an excerpt's header is a Reading Library book page (sourceTitle contains "— Page N/M" and no "(video ...)" tag), you MAY name the book inline in prose (e.g. "According to the Strategy & Planning handbook, …"). Do NOT emit a citation entry for library pages — only video and course/module chunks go in the citations field.
-- When excerpts include Reading Library catalogue entries (sourceTitle ends with "— Catalogue Entry" and the chunk body starts with "Book:" / "Author:" / "Category:" lines), treat them as a book catalogue the user can browse. For questions like "suggest books on <topic>" or "what books do you have about <X>", list each relevant book by title grouped by category (e.g. "In Governance: Strategy & Planning, Analytics & Intelligence. In Core Processes → Temple: Deity Worship, Visitor Experience.") and invite the learner to open any one in the Reading Library. Still no citation entry for library content.
+- Reading Library content has sourceTitle in the form "<Book Title> — Page N/M" or "<Book Title> — Catalogue Entry". For "what books cover <topic>" questions, list ONLY the book titles that appear in the supplied excerpts (strip the "— Page" / "— Catalogue Entry" suffix, deduplicate). Hard rule: if a book title is not literally present in an excerpt sourceTitle, you MUST NOT include it in your answer. If no library excerpts are supplied, say the library doesn't have a specific match for that topic and invite them to browse. Still no citation entry for library content.
 
 JSON FIELDS:
 - "answer": the clean user-facing text (no chunk IDs inline).
@@ -71,10 +71,42 @@ export function buildContext(chunks: ContextChunk[]): string {
     .join('\n\n')
 }
 
-function buildMessages(query: string, contextBlock: string): ChatMessage[] {
+/**
+ * Extract the distinct Reading Library book titles that appear in the retrieved
+ * chunks. `sourceTitle` for library chunks is "<Book Title> — Page N/M" (page
+ * excerpts) or "<Book Title> — Catalogue Entry" (catalogue summaries). We strip
+ * either suffix. Non-library chunks are ignored (course/module/video content
+ * never matches). Return the de-duplicated list in first-seen order so the LLM
+ * can only cite books whose chunks were actually retrieved.
+ */
+function extractLibraryBookTitles(chunks: ContextChunk[]): string[] {
+  const seen = new Set<string>()
+  const ordered: string[] = []
+  for (const c of chunks) {
+    const match = /^(.+?)\s+—\s+(Page\s+\d+\/\d+|Catalogue Entry)$/.exec(c.sourceTitle)
+    if (!match) continue
+    const title = match[1]!.trim()
+    if (!seen.has(title)) {
+      seen.add(title)
+      ordered.push(title)
+    }
+  }
+  return ordered
+}
+
+function buildMessages(query: string, contextBlock: string, chunks: ContextChunk[]): ChatMessage[] {
+  // Inject an explicit allowlist of library book titles present in the context.
+  // Prompt instructions alone don't stop Gemini from inventing titles when the
+  // query shape is "which books cover X"; a hard-coded list in the user message
+  // is far more durable. If no library chunks are retrieved the block is empty
+  // and the LLM should say the library doesn't cover the topic.
+  const allowedTitles = extractLibraryBookTitles(chunks)
+  const allowlistBlock = allowedTitles.length
+    ? `\n\nAllowed Reading Library book titles (do not name any book outside this list):\n${allowedTitles.map((t) => `- ${t}`).join('\n')}`
+    : `\n\nNo Reading Library books were retrieved for this question. If the user asked for books, tell them the library does not have a direct match and invite them to browse.`
   return [
     { role: 'system', content: SYSTEM },
-    { role: 'user', content: `Context:\n${contextBlock}\n\nQuestion: ${query}` },
+    { role: 'user', content: `Context:\n${contextBlock}${allowlistBlock}\n\nQuestion: ${query}` },
   ]
 }
 
@@ -89,7 +121,7 @@ export async function generateAnswer(
   const res = await withRetry(() =>
     chatComplete({
       model,
-      messages: buildMessages(query, contextBlock),
+      messages: buildMessages(query, contextBlock, chunks),
       temperature: 0.2,
       json: true,
     }),
@@ -124,7 +156,7 @@ export async function* streamAnswer(
       Promise.resolve(
         chatCompleteStream({
           model,
-          messages: buildMessages(query, contextBlock),
+          messages: buildMessages(query, contextBlock, chunks),
           temperature: 0.2,
           json: true,
         }),
