@@ -642,6 +642,13 @@ apiRouter.get('/videos/:id', async (req, res) => {
 apiRouter.post('/videos', async (req, res) => {
   try {
     const result = await adminService.createVideo(req.body);
+    // Background: fetch Gumlet transcript so lms-rag can ingest real content
+    // instead of just title + description. Same pattern as pdfExtractService
+    // for PDF resources. Service's own idempotency guard makes repeat calls
+    // cheap, so always-triggering here is safe.
+    if (result.success && result.data?.id && result.data?.externalVideoId) {
+      require('../services/gumletTranscriptService').fetchInBackground(result.data.id);
+    }
     const statusCode = result.success ? 201 : 400;
     res.status(statusCode).json(result);
   } catch (error) {
@@ -658,6 +665,9 @@ apiRouter.put('/videos/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const result = await adminService.updateVideo(parseInt(id), req.body);
+    if (result.success && result.data?.id && result.data?.externalVideoId) {
+      require('../services/gumletTranscriptService').fetchInBackground(result.data.id);
+    }
     const statusCode = result.success ? 200 : 404;
     res.status(statusCode).json(result);
   } catch (error) {
