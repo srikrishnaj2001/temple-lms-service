@@ -100,10 +100,25 @@ export async function askSyncRoute(app: FastifyInstance) {
         courseIds: effectiveCourseIds.length > 0 ? effectiveCourseIds : undefined,
         history: body.history,
         // Voice tool-call needs a hard deadline — if the Gemini embed stalls
-        // (intermittent HTTP/2 socket issue on dev plans), fall back to
-        // keyword-only retrieval so the agent still answers within budget.
-        // 8s = ~5s embed grace + ~3s LLM headroom.
-        embedTimeoutMs: 8000,
+        // (intermittent HTTP/2 socket issue), fall back to keyword-only
+        // retrieval so the agent still answers within budget.
+        //
+        // Dropped from 8000ms → 2500ms after prod voice logs showed 12-second
+        // tool durations driven by the dense lane consuming the full old
+        // budget before falling back. ElevenLabs has a ~10s tool-call
+        // timeout; sitting at 12s lets individual calls succeed but puts the
+        // voice conversation 5+ seconds behind every turn. With the paid
+        // Gemini key a healthy embed completes in 400–800ms; 2.5s is a
+        // generous ceiling before giving up and falling back to keyword.
+        embedTimeoutMs: 2500,
+        // Skip the LLM rewrite step — it adds ~1s of latency and often
+        // reshapes a clean query like "temple governance" into a verbose
+        // "What are the key aspects of temple governance in Hindu temples?"
+        // which keyword FTS then can't match (every token must be present in
+        // the chunk). /search uses the same skip for identical reasons. For
+        // voice this both saves latency AND recovers library hits that the
+        // rewrite otherwise loses.
+        skipRewrite: true,
       } as never)
 
       // 2. Build context (same shape as /ask streaming path)

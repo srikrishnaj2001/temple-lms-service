@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply } from 'fastify'
 import { z } from 'zod'
 import { hybridRetrieve } from '@ai-guru/core/retrieval'
-import { streamAnswer, type ContextChunk } from '@ai-guru/core/llm'
+import { streamAnswer, substantiveChunks, EMPTY_CONTEXT_ANSWER, type ContextChunk } from '@ai-guru/core/llm'
 import { validation, auth, conversations } from '@ai-guru/core'
 import { createSession, deleteSession, getSession } from '../sse/session.js'
 import { cacheKey, getCached, putCached, type CachedResponse } from '../sse/answer-cache.js'
@@ -177,6 +177,14 @@ export async function askRoute(app: FastifyInstance) {
       const retrieval = await hybridRetrieve(session.query, {
         ...(session.options as object),
         embedTimeoutMs: 10000,
+        // The LLM rewrite step turns clean queries like "temple governance"
+        // into verbose sentences ("What are the key aspects of temple
+        // governance in Hindu temples?"). Postgres FTS then can't match the
+        // longer form because it AND-joins every token and the extra
+        // stopwords aren't in chunk bodies. /search and /ask/sync already
+        // skip rewrite for identical reasons — we do the same here so chat
+        // retrieves library books instead of saying "no match".
+        skipRewrite: true,
       } as never)
       // Build retrieval payload once so we can both emit and cache it verbatim.
       const retrievalEvent = {
@@ -224,6 +232,51 @@ export async function askRoute(app: FastifyInstance) {
         startSec: v.startSec,
       }))
       const allContext = [...contextChunks, ...cueContext]
+
+      // Short-circuit: if retrieval returned nothing substantive, skip the
+      // LLM entirely and emit the honest "couldn't find that" message. Saves
+      // 2-10 seconds of latency AND eliminates the hallucination risk that
+      // prod voice logs showed (confident 447-char numbered lists generated
+      // when citations was []). Same message /ask/sync's post-generation
+      // guard uses, so chat + voice behave identically on empty retrieval.
+      if (substantiveChunks(allContext).length === 0) {
+        sendEvent(reply, 'stage', { stage: 'answering', label: 'Checking the library…' })
+        const emptyAnswer = {
+          answer: EMPTY_CONTEXT_ANSWER,
+          confidence: 'low' as const,
+          citations: [] as Array<{ id: string; chunkId: string }>,
+          watchNext: [] as Array<unknown>,
+          readNext: [] as string[],
+          followUps: ['What topics are covered in this course library?'],
+        }
+        const emptyValidation = {
+          droppedCitations: 0,
+          droppedWatchNext: 0,
+          citationValidityPct: 100,
+        }
+        // Stream the honest message as a single token so the client renders
+        // it the same way a streamed answer renders, then emit the usual
+        // meta events and close out.
+        sendEvent(reply, 'token', { text: EMPTY_CONTEXT_ANSWER })
+        sendEvent(reply, 'answer', emptyAnswer)
+        sendEvent(reply, 'validation', emptyValidation)
+        sendEvent(reply, 'done', {})
+        reply.raw.end()
+        // Cache so a repeated identical query is instant.
+        if (!hasHistory) {
+          putCached(cKey, {
+            retrievalEvent,
+            answerText: EMPTY_CONTEXT_ANSWER,
+            answerEvent: emptyAnswer,
+            validationEvent: emptyValidation,
+          })
+        }
+        // Deliberately skip persistence here — the honest "I couldn't find
+        // that" message isn't a real answer and would clutter chat history.
+        // If the user rephrases, the retry turn gets persisted normally.
+        deleteSession(params.id)
+        return
+      }
 
       // 2. stream tokens
       // Emit an "answering" stage RIGHT before we call the LLM so the UI

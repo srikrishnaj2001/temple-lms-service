@@ -42,6 +42,7 @@ STYLE RULES (strict):
 - Write natural prose. DO NOT put "(id: k1, chunkId: ...)" or any raw context labels inside the answer text. Citations belong ONLY in the "citations" JSON field, never inside "answer".
 - Use plain formatting — short sentences, bullet points if helpful, no markdown code fences, no long section headers.
 - Answer ONLY from the supplied context. If the context lacks the answer, say so briefly and set confidence to "low".
+- Do NOT draft sample language or suggest what an answer "might be like" or offer "something you could say" when the context does not contain the information. Either ground on an excerpt or admit you don't see it in the materials — never invent a plausible-sounding middle ground. The server also enforces this: if your "citations" array is empty AND no catalogue/page excerpts are supplied, your "answer" will be replaced with a standard "I couldn't find that in the course library" message regardless of what you wrote. So just cite the chunks you used.
 - When an excerpt's header is a Reading Library book page (sourceTitle contains "— Page N/M" and no "(video ...)" tag), you MAY name the book inline in prose (e.g. "According to the Strategy & Planning handbook, …"). Do NOT emit a citation entry for library pages — only video and course/module chunks go in the citations field.
 - Reading Library content has sourceTitle in the form "<Book Title> — Page N/M" or "<Book Title> — Catalogue Entry". For "what books cover <topic>" questions, list ONLY the book titles that appear in the supplied excerpts (strip the "— Page" / "— Catalogue Entry" suffix, deduplicate). Hard rule: if a book title is not literally present in an excerpt sourceTitle, you MUST NOT include it in your answer. If no library excerpts are supplied, say you could not find a specific match in the retrieved excerpts and invite them to browse. Still no citation entry for library content.
 
@@ -127,7 +128,88 @@ export async function generateAnswer(
     }),
   )
 
-  return safeParseAnswer(res.text)
+  return enforceGroundedAnswer(safeParseAnswer(res.text), chunks)
+}
+
+/**
+ * Server-side guardrail — the prompt tells the LLM "do not improvise when
+ * context is empty", but prod voice logs showed the model confidently
+ * fabricating a numbered answer with `confidence: "high"` and `citations: []`
+ * for an empty-context call. That is the worst failure mode for a voice
+ * agent: a learner acts on invented advice.
+ *
+ * This guard is authoritative: if retrieval returned zero chunks OR the LLM
+ * failed to cite any of the chunks it was given, overwrite the answer with
+ * a fixed honesty sentence and lower confidence. The LLM's answer is
+ * discarded in that case — it was improvising, not grounding.
+ */
+/**
+ * Minimum chunk text length to count as "substantive" (groundable). Video
+ * cues are 20–40 char subtitle fragments that cannot support a factual
+ * answer — the LLM treats them as context, returns an answer, but is
+ * actually improvising from training data. This threshold filters them out.
+ */
+const SUBSTANTIVE_MIN_CHARS = 100
+
+/**
+ * Returns the subset of context that is substantive enough to support a
+ * grounded answer. Used both by `enforceGroundedAnswer` (post-generation
+ * check in /ask/sync) and by the SSE `/ask` route's pre-generation
+ * short-circuit — if this returns empty, we can skip the LLM entirely and
+ * stream back a single honest message, saving a token round-trip and
+ * removing any chance of hallucination.
+ */
+export function substantiveChunks(chunks: ContextChunk[]): ContextChunk[] {
+  return chunks.filter(
+    (c) => c.videoId == null && (c.text?.length ?? 0) >= SUBSTANTIVE_MIN_CHARS,
+  )
+}
+
+/** Fixed response the empty-context guard emits — single source of truth so
+ *  the SSE short-circuit and the /ask/sync post-check emit identical text. */
+export const EMPTY_CONTEXT_ANSWER =
+  "I couldn't find that in the course library — could you rephrase, or ask about a different topic?"
+
+export function enforceGroundedAnswer(
+  parsed: AnswerJson,
+  chunks: ContextChunk[],
+): AnswerJson {
+  // Prod voice logs showed the LLM confidently hallucinating 447-char
+  // numbered lists with `citations: []` when retrieval returned only video
+  // cues. `substantiveChunks` strips those cues so the guard sees empty
+  // context and overrides correctly.
+  const substantive = substantiveChunks(chunks)
+  const groundable = substantive.length > 0
+  const grounded = Array.isArray(parsed.citations) && parsed.citations.length > 0
+  // Library answers legitimately carry empty citations (the schema reserves
+  // citations for course/module/video chunks; library answers reference
+  // books in prose, see the library allowlist rule).
+  const hasLibraryExcerpt = substantive.some((c) =>
+    /— (Page \d+\/\d+|Catalogue Entry)$/.test(c.sourceTitle),
+  )
+  if (!groundable) {
+    return {
+      ...parsed,
+      answer: EMPTY_CONTEXT_ANSWER,
+      confidence: 'low',
+      citations: [],
+      watchNext: [],
+      readNext: [],
+      followUps: ['What topics are covered in this course library?'],
+    }
+  }
+  if (!grounded && !hasLibraryExcerpt) {
+    // Chunks WERE returned but the LLM didn't cite any — a sign it ignored
+    // the context and improvised instead. Treat the same as empty context.
+    return {
+      ...parsed,
+      answer:
+        "I couldn't find a direct answer in your training materials — could you rephrase, or ask about a related topic?",
+      confidence: 'low',
+      watchNext: [],
+    }
+  }
+  return parsed
 }
 
 export interface StreamAnswerOptions extends GenerateOptions {
