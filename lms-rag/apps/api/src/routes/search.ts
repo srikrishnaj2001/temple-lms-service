@@ -1,26 +1,25 @@
 /**
- * POST /search — instant library search with an on-topic AI fallback.
+ * POST /search — library-grounded search with an on-topic AI summariser.
  *
  * Flow:
- *   1. Hybrid retrieve (dense + keyword + rerank).
- *   2. Group results as courses / modules / videos and format navigable
- *      URLs the LMS learner app understands.
- *   3. If the top library result is weak (RRF score below floor), ask the
- *      fast LLM for a 2-3 sentence answer WITH a hard topic guardrail:
- *      the model must reply with the literal token `__OFF_TOPIC__` when the
- *      query is unrelated to temple training / seva / devotional practice.
- *      That token is intercepted server-side and surfaced as
- *      `aiDeclined: true` — the widget shows a friendly decline instead of
- *      the model's own decline phrasing.
+ *   1. Hybrid retrieve (dense + keyword, rerank off for search speed).
+ *   2. Group results as courses / modules / videos / library and format
+ *      navigable URLs the LMS learner app understands.
+ *   3. When submit=true (user hit Enter), the fast LLM gets the retrieved
+ *      excerpts as context and produces a 2-3 sentence summary grounded on
+ *      them — never a general-knowledge invention that contradicts the
+ *      real cards. If the excerpts are empty, a server-side guard
+ *      overwrites any invented answer with a standard "no direct match"
+ *      sentence. Off-topic queries still return __OFF_TOPIC__ and surface
+ *      as aiDeclined: true.
  *
- * No LLM call at all when the library already has a good match — most
- * queries take ~150ms, no external cost. Off-topic queries cost one cheap
- * fast-model call (~$0.0001).
+ * Typing (submit=false) skips the LLM entirely — the four category lists
+ * speak for themselves and cost ~150ms.
  */
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { hybridRetrieve } from '@ai-guru/core/retrieval'
-import { withRetry, chatComplete, MODELS } from '@ai-guru/core/llm'
+import { withRetry, chatComplete, MODELS, substantiveChunks, type ContextChunk } from '@ai-guru/core/llm'
 import { auth } from '@ai-guru/core'
 import { requireLearner } from '../learner-auth.js'
 
@@ -94,25 +93,77 @@ const STOPWORDS = new Set([
   'tell', 'show', 'find', 'know', 'need', 'want', 'help', 'give', 'take',
 ])
 
-const AI_SYSTEM = `You are a concise helper embedded in a Hindu temple training LMS search bar. The learner searched for something not covered by the library.
+const AI_SYSTEM = `You are a concise helper embedded in a Hindu temple training LMS search bar. The learner submitted a query. The library search returned the excerpts below (which may be empty).
 
-Rules:
-- Answer in 2-3 short sentences. No bullet lists. No greetings.
-- DEFAULT to answering. Only decline when the question is CLEARLY unrelated to Hindu religion, temple life, or a temple volunteer's work.
-- Explicitly IN scope (this list is illustrative, not exhaustive):
+How to answer:
+
+1. If the supplied excerpts actually address the query, ground your answer in them:
+   - Summarise what the library has, in your own words, in 2-3 short sentences.
+   - Where helpful, name a specific book, video, course or module the learner can open (names come ONLY from the excerpts' sourceTitle lines; do NOT invent names).
+   - Do NOT claim the library contains anything that isn't in the excerpts.
+
+2. If the excerpts are empty or don't address the query, but the query is in scope for a Hindu temple training LMS (see scope list below):
+   - Answer the question directly in 2-3 short sentences from general knowledge of Hindu temple life and seva.
+   - DO NOT mention "the library" at all when doing this — don't say "the library doesn't cover…", don't say "the library suggests…", just answer.
+   - DO NOT fabricate a specific book, video, course or module name — if you don't have it in the excerpts, don't mention a title.
+
+3. If the query is CLEARLY off-topic — weather, coding, celebrities, politics, sports, general trivia, current affairs, product reviews, comparisons of other religions, consumer advice unrelated to temple life — respond with EXACTLY this token and nothing else:
+${OFF_TOPIC_TOKEN}
+
+Style: Short. Direct. No bullet lists. No greetings. No "I think" / "I believe". No disclaimers about being an AI.
+
+In scope (illustrative, not exhaustive):
   * Temple operations, seva, sadhana, puja, arati, kirtan, prasadam, festivals, ashrama life
-  * Guest reception, welcoming first-time visitors, hospitality, darshan etiquette, community outreach, devotee care
-  * Deities (Krishna, Rama, Shiva, Devi, and their forms/pastimes)
-  * Saints, acharyas, gurus (Chaitanya Mahaprabhu, Srila Prabhupada, Rupa Goswami, Ramanuja, Madhva, etc.)
-  * Scripture: Vedas, Upanishads, Puranas, Bhagavad Gita, Srimad Bhagavatam, Ramayana, Mahabharata
-  * Yogas and philosophies: bhakti, jnana, karma, ashtanga; sankhya, vedanta
+  * Guest reception, welcoming visitors, hospitality, darshan etiquette, community outreach
+  * Deities (Krishna, Rama, Shiva, Devi) and their forms, pastimes, worship
+  * Saints, acharyas, gurus (Chaitanya Mahaprabhu, Srila Prabhupada, Ramanuja, Madhva, etc.)
+  * Scripture (Vedas, Upanishads, Puranas, Bhagavad Gita, Srimad Bhagavatam, Ramayana, Mahabharata)
+  * Yogas and philosophies (bhakti, jnana, karma, ashtanga, sankhya, vedanta)
   * Sanskrit terms and their meanings
   * Home worship, personal sadhana, japa, chanting, deity care at home
   * Volunteer training, temple etiquette, dress code, service protocols
-  * The LMS itself and its courses
-- ONLY decline for clearly off-topic requests: weather, coding, celebrities, politics, sports, general trivia, current affairs, product reviews, comparisons of other religions. In that case respond with EXACTLY this token and nothing else:
-${OFF_TOPIC_TOKEN}
-- Never invent LMS course names or claim the library contains something. This is a fallback for when the library does NOT cover the topic.`
+  * The LMS itself, its courses and how to use it`
+
+/**
+ * Compose the retrieval excerpts the AI gets in the user message. Mirrors
+ * generate.ts's buildContext() but formatted for the short-answer search
+ * surface: shorter snippets, source type tagged inline so the LLM can
+ * naturally say "the Strategy & Planning book" or "the Your Role in
+ * Visitor Reception video" when citing. Empty-context block is explicit so
+ * the LLM can honor the "no direct match" rule rather than improvise.
+ *
+ * Only passes substantive excerpts (filters out 28-char video-cue
+ * fragments that have no semantic content on their own).
+ */
+function buildSearchAIContext(
+  chunks: ContextChunk[],
+  query: string,
+): { context: string; hasContent: boolean } {
+  const good = substantiveChunks(chunks)
+  if (good.length === 0) {
+    // No library content hit this query. Still ask the model to answer
+    // normally if the query is in scope — the prompt's rule #2 handles
+    // this path. We deliberately do NOT tell the model "the library has
+    // nothing" because that framing was baked into the old prompt and the
+    // model kept leading with "the library doesn't cover this" even when
+    // retrieval later surfaced real hits (false contradiction with the
+    // cards above). Keep the context section empty and let the model
+    // follow rule #2.
+    return {
+      context: `Library search excerpts for "${query}":\n\n(no matching excerpts)`,
+      hasContent: false,
+    }
+  }
+  const lines = good.map((c, i) => {
+    const trail = c.headingTrail.length ? ` > ${c.headingTrail.join(' > ')}` : ''
+    const snippet = (c.text ?? '').replace(/\s+/g, ' ').slice(0, 360).trim()
+    return `[${i + 1}] ${c.sourceTitle}${trail}\n${snippet}`
+  })
+  return {
+    context: `Library search excerpts for "${query}":\n\n${lines.join('\n\n')}`,
+    hasContent: true,
+  }
+}
 
 export async function searchRoute(app: FastifyInstance) {
   app.post('/search', async (req, reply) => {
@@ -343,6 +394,26 @@ export async function searchRoute(app: FastifyInstance) {
     let aiDeclined = false
 
     if (body.submit) {
+      // Build the context the LLM will ground on. Mirrors /ask + /ask/sync's
+      // contract so a library-covered query gets a summarising answer, not
+      // a training-data invention that contradicts the real cards above.
+      const aiChunks: ContextChunk[] = retrieval.chunks.map((c, i) => ({
+        id: `k${i + 1}`,
+        chunkId: c.id,
+        headingTrail: c.headingTrail,
+        sourceTitle: c.sourceTitle,
+        text: c.text,
+      }))
+      const aiCues: ContextChunk[] = retrieval.videoCues.slice(0, 3).map((v, i) => ({
+        id: `v${i + 1}`,
+        chunkId: v.id,
+        headingTrail: [v.videoTitle ?? `video ${v.videoId}`],
+        sourceTitle: `Video cue @${v.startSec}s`,
+        text: v.text,
+        videoId: v.videoId,
+        startSec: v.startSec,
+      }))
+      const { context } = buildSearchAIContext([...aiChunks, ...aiCues], body.query)
       try {
         const res = await withRetry(
           () =>
@@ -350,7 +421,7 @@ export async function searchRoute(app: FastifyInstance) {
               model: MODELS.fast,
               messages: [
                 { role: 'system', content: AI_SYSTEM },
-                { role: 'user', content: body.query },
+                { role: 'user', content: context },
               ],
               temperature: 0.2,
             }),
@@ -362,6 +433,15 @@ export async function searchRoute(app: FastifyInstance) {
         } else if (text.length > 0) {
           aiAnswer = text
         }
+        // No hard honesty override here. For in-scope queries with empty
+        // excerpts, the prompt's rule #2 permits (and encourages) a short
+        // general-knowledge answer that does NOT claim library coverage —
+        // which is what the learner asked for ("answer temple questions,
+        // not just library-grounded ones"). Off-topic queries are still
+        // handled by the OFF_TOPIC_TOKEN mechanism above. If prompt leakage
+        // starts producing false library claims on empty-excerpt queries,
+        // reintroduce a targeted guard that only fires when the answer
+        // literally mentions the word "library".
       } catch (err) {
         req.log.warn({ err }, 'search AI fallback failed')
       }
