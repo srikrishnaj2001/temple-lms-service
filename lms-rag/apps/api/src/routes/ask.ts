@@ -174,7 +174,7 @@ export async function askRoute(app: FastifyInstance) {
       //    still emits a token response instead of hanging indefinitely.
       //    Looser than /ask-sync because the SSE channel can show the user
       //    a "still working…" stage event while we wait.
-      const retrieval = await hybridRetrieve(session.query, {
+      let retrieval = await hybridRetrieve(session.query, {
         ...(session.options as object),
         embedTimeoutMs: 10000,
         // The LLM rewrite step turns clean queries like "temple governance"
@@ -186,6 +186,27 @@ export async function askRoute(app: FastifyInstance) {
         // retrieves library books instead of saying "no match".
         skipRewrite: true,
       } as never)
+      // Fallback for typos and vague phrasing. The fast path above skips the
+      // LLM rewrite to save ~1s on the common clean-query case, but the cost
+      // is that queries like "strategc stewardship framework" (missing an
+      // 'i') fail both FTS and dense retrieval because the tokens never
+      // match. When the fast path returns no substantive chunks we retry
+      // once with rewrite enabled — rewrite corrects spelling and expands
+      // intent, catching material the first pass missed. Learners typing on
+      // mobile would otherwise hit the "I couldn't find that" message for
+      // content that is literally in the index.
+      const fastChunksSubstantive = retrieval.chunks.filter((c) => (c.text?.length ?? 0) >= 100)
+      if (fastChunksSubstantive.length === 0) {
+        sendEvent(reply, 'stage', { stage: 'retrieving', label: 'Trying a broader search…' })
+        const retry = await hybridRetrieve(session.query, {
+          ...(session.options as object),
+          embedTimeoutMs: 10000,
+          skipRewrite: false,
+        } as never)
+        if (retry.chunks.filter((c) => (c.text?.length ?? 0) >= 100).length > 0) {
+          retrieval = retry
+        }
+      }
       // Build retrieval payload once so we can both emit and cache it verbatim.
       const retrievalEvent = {
         rewritten: retrieval.rewritten,
